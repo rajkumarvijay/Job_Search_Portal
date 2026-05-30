@@ -6,7 +6,7 @@ from schemas.job import SearchResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-RESULTS_PER_SITE = 10
+RESULTS_PER_SITE = 8   # per portal — 8 × 6 portals = up to 48 results total
 
 
 @router.get("/search", response_model=SearchResponse)
