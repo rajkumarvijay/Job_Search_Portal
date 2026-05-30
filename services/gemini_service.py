@@ -16,25 +16,43 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4)
 
-# ── Lazy Gemini client ────────────────────────────────────────────────────────
+# ── Gemini model candidates (tried in order until one works) ──────────────────
+_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+    "gemini-pro",
+]
+
 _model = None
 
 def _get_model():
     global _model
     if _model is not None:
         return _model
-    try:
-        import google.generativeai as genai
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set")
-        genai.configure(api_key=api_key)
-        _model = genai.GenerativeModel("gemini-1.5-flash")
-        logger.info("Gemini 1.5 Flash model loaded")
-        return _model
-    except Exception as e:
-        logger.error(f"Failed to initialise Gemini: {e}")
-        raise
+
+    import google.generativeai as genai
+
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable is not set")
+    genai.configure(api_key=api_key)
+
+    # Try each model name until one responds successfully
+    for name in _MODELS:
+        try:
+            candidate = genai.GenerativeModel(name)
+            # Quick probe — list_models is cheap, generateContent is not
+            candidate.generate_content("hi", generation_config={"max_output_tokens": 5})
+            _model = candidate
+            logger.info(f"Gemini model loaded: {name}")
+            return _model
+        except Exception as e:
+            logger.warning(f"Model '{name}' unavailable: {e}")
+
+    raise RuntimeError("No Gemini model is available. Check your GEMINI_API_KEY and region.")
 
 
 def _extract_json(text: str) -> str:
