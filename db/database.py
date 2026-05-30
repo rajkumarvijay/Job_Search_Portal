@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 import os
+import ssl
 import sys
 
 # ── Read DATABASE_URL from environment ──────────────────────────────────────
@@ -24,6 +25,13 @@ else:
     print("Expected postgresql:// or postgres:// URL.", file=sys.stderr)
     sys.exit(1)
 
+# ── SSL context — Railway PostgreSQL requires SSL ────────────────────────────
+# Use a permissive SSL context that does not verify the server certificate.
+# This is safe for Railway's internal private networking.
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
+
 # ── Create async engine ──────────────────────────────────────────────────────
 engine = create_async_engine(
     DATABASE_URL,
@@ -32,6 +40,7 @@ engine = create_async_engine(
     max_overflow=10,
     pool_pre_ping=True,       # drops stale connections automatically
     pool_recycle=1800,        # recycle connections every 30 minutes
+    connect_args={"ssl": _ssl_ctx},  # required by Railway PostgreSQL
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
