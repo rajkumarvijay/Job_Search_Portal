@@ -27,10 +27,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS — allow every origin ─────────────────────────────────────────────────
-# Our session identity uses X-Session-ID header (not cookies), so
-# allow_credentials=False is correct and lets us use allow_origins=["*"].
-# This permanently fixes the preflight OPTIONS rejection.
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,7 +35,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=86400,          # cache preflight for 24 hours
+    max_age=86400,
 )
 
 app.include_router(jobs.router, prefix="/api/v1")
@@ -47,13 +44,28 @@ app.include_router(history.router, prefix="/api/v1")
 app.include_router(saved.router, prefix="/api/v1")
 
 
+# ── Root & health endpoints ───────────────────────────────────────────────────
+# GET / — Railway load balancer and uptime monitors hit this.
+# Must return 200 or Railway marks the service as unhealthy.
+@app.get("/")
+async def root():
+    return {
+        "service": "Job Search Portal API",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "api": "/api/v1",
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "Job Search Portal API"}
 
 
-# ── Manual OPTIONS handler — catches any preflight the middleware misses ──────
-@app.options("/{rest_of_path:path}")
+# ── OPTIONS preflight fallback ────────────────────────────────────────────────
+# Only matches paths that start with /api/ so the root GET / is not shadowed.
+@app.options("/api/{rest_of_path:path}")
 async def preflight_handler(request: Request, rest_of_path: str):
     return JSONResponse(
         content={},
