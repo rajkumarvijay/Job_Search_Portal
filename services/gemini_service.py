@@ -16,7 +16,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4)
 
-# ── Gemini model candidates (tried in order until one works) ──────────────────
+# Model candidates — tried in order on FIRST actual content request
 _MODELS = [
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
@@ -26,33 +26,53 @@ _MODELS = [
     "gemini-pro",
 ]
 
-_model = None
+_genai   = None   # google.generativeai module
+_model_name: str = ""   # name of the working model, empty = not discovered yet
 
-def _get_model():
-    global _model
-    if _model is not None:
-        return _model
 
+def _configure():
+    """Configure genai once with the API key. Never probes models."""
+    global _genai
+    if _genai is not None:
+        return _genai
     import google.generativeai as genai
-
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is not set")
+        raise ValueError(
+            "GEMINI_API_KEY is not set. "
+            "Go to Railway → backend service → Variables → add GEMINI_API_KEY."
+        )
     genai.configure(api_key=api_key)
+    _genai = genai
+    return genai
 
-    # Try each model name until one responds successfully
-    for name in _MODELS:
+
+def _call_with_fallback(prompt: str) -> str:
+    """
+    Try each model candidate until one returns a response.
+    Caches the working model name so subsequent calls skip the loop.
+    """
+    global _model_name
+    genai = _configure()
+
+    candidates = [_model_name] + [m for m in _MODELS if m != _model_name] if _model_name else _MODELS
+
+    for name in candidates:
         try:
-            candidate = genai.GenerativeModel(name)
-            # Quick probe — list_models is cheap, generateContent is not
-            candidate.generate_content("hi", generation_config={"max_output_tokens": 5})
-            _model = candidate
-            logger.info(f"Gemini model loaded: {name}")
-            return _model
+            model = genai.GenerativeModel(name)
+            resp  = model.generate_content(prompt)
+            _model_name = name      # remember for next call
+            logger.info(f"[Gemini] used model: {name}")
+            return resp.text
         except Exception as e:
-            logger.warning(f"Model '{name}' unavailable: {e}")
+            logger.warning(f"[Gemini] model '{name}' failed: {type(e).__name__}: {e}")
+            if "API_KEY" in str(e) or "api key" in str(e).lower():
+                raise ValueError(f"Invalid GEMINI_API_KEY: {e}") from e
 
-    raise RuntimeError("No Gemini model is available. Check your GEMINI_API_KEY and region.")
+    raise RuntimeError(
+        "All Gemini model candidates failed. "
+        "Check your GEMINI_API_KEY and that it has access to Gemini models."
+    )
 
 
 def _extract_json(text: str) -> str:
@@ -95,7 +115,6 @@ Return exactly {count} jobs. No duplicates.
 
 
 def _run_job_search(query: str, location: str, count: int) -> list[dict]:
-    model = _get_model()
     prompt = _JOB_SEARCH_PROMPT.format(
         query=query,
         query_encoded=query.replace(" ", "+"),
@@ -103,14 +122,14 @@ def _run_job_search(query: str, location: str, count: int) -> list[dict]:
         count=count,
     )
     try:
-        response = model.generate_content(prompt)
-        raw = _extract_json(response.text)
+        raw_text = _call_with_fallback(prompt)
+        raw  = _extract_json(raw_text)
         jobs = json.loads(raw)
         if not isinstance(jobs, list):
             jobs = []
         logger.info(f"[Gemini] {len(jobs)} jobs returned for '{query}' in {location}")
         return jobs
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, ValueError) as e:
         logger.warning(f"[Gemini] JSON parse error: {e}")
         return []
     except Exception as e:
@@ -194,19 +213,20 @@ Be specific, actionable, and honest.
 
 
 def _run_resume_analysis(resume_text: str, target_role: str) -> dict:
-    model = _get_model()
-    # Truncate to avoid token limits
     truncated = resume_text[:8000]
     prompt = _RESUME_PROMPT.format(resume_text=truncated, target_role=target_role or "General")
     try:
-        response = model.generate_content(prompt)
-        raw = _extract_json(response.text)
+        raw_text = _call_with_fallback(prompt)
+        raw    = _extract_json(raw_text)
         result = json.loads(raw)
         logger.info(f"[Gemini] Resume analysed — ATS score: {result.get('ats_score')}")
         return result
     except json.JSONDecodeError as e:
         logger.warning(f"[Gemini] Resume JSON parse error: {e}")
-        return {"error": "Could not parse Gemini response", "ats_score": 0}
+        return {"error": "Could not parse Gemini response. Try again.", "ats_score": 0}
+    except ValueError as e:
+        # API key error — bubble up cleanly
+        raise
     except Exception as e:
         logger.warning(f"[Gemini] Resume analysis error: {e}")
         return {"error": str(e), "ats_score": 0}

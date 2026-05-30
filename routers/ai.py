@@ -64,11 +64,13 @@ async def analyse_resume(
     try:
         result = await analyze_resume(resume_text, target_role)
         return result
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
+        # ValueError  = GEMINI_API_KEY not set or invalid
+        # RuntimeError = all model candidates failed
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Resume analysis error: {e}")
-        raise HTTPException(status_code=500, detail="Resume analysis failed")
+        logger.error(f"Resume analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Resume analysis failed: {e}")
 
 
 # ── Text extraction helpers ───────────────────────────────────────────────────
