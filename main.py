@@ -1,7 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from db.init_db import init_db
 from routers import jobs, trending, history, saved
 from scheduler import start_scheduler, stop_scheduler
@@ -26,12 +27,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── CORS — allow every origin ─────────────────────────────────────────────────
+# Our session identity uses X-Session-ID header (not cookies), so
+# allow_credentials=False is correct and lets us use allow_origins=["*"].
+# This permanently fixes the preflight OPTIONS rejection.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,          # cache preflight for 24 hours
 )
 
 app.include_router(jobs.router, prefix="/api/v1")
@@ -43,3 +50,17 @@ app.include_router(saved.router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "Job Search Portal API"}
+
+
+# ── Manual OPTIONS handler — catches any preflight the middleware misses ──────
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+        },
+    )
