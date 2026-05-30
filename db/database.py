@@ -4,17 +4,21 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 import os
 import sys
 
-# ── Read DATABASE_URL from environment ──────────────────────────────────────
-_raw_url = os.getenv("DATABASE_URL", "")
+# ── Resolve DATABASE_URL ─────────────────────────────────────────────────────
+# Prefer the private Railway internal URL (postgres.railway.internal) — it
+# connects directly inside Railway's private network without SSL or proxy.
+# Fall back to DATABASE_URL (public proxy) if private URL is not set.
+_raw_url = (
+    os.getenv("DATABASE_PRIVATE_URL")   # Railway internal — best option
+    or os.getenv("DATABASE_URL", "")    # Public proxy fallback
+)
 
 if not _raw_url:
-    print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
-    print("Set it in Railway → backend service → Variables → Add Reference → Postgres → DATABASE_URL", file=sys.stderr)
+    print("ERROR: No database URL found.", file=sys.stderr)
+    print("In Railway → backend service → Variables → Add Reference → Postgres → DATABASE_PRIVATE_URL", file=sys.stderr)
     sys.exit(1)
 
-# ── Fix scheme: Railway gives postgresql:// or postgres://
-#    asyncpg requires  postgresql+asyncpg://
-# ─────────────────────────────────────────────────────────
+# ── Fix scheme for asyncpg ───────────────────────────────────────────────────
 if _raw_url.startswith("postgresql+asyncpg://"):
     _fixed = _raw_url
 elif _raw_url.startswith("postgresql://"):
@@ -25,29 +29,45 @@ else:
     print(f"ERROR: Unrecognised DATABASE_URL scheme: {_raw_url[:40]}", file=sys.stderr)
     sys.exit(1)
 
-# ── Strip ?sslmode from the URL ──────────────────────────────────────────────
-# Railway's public proxy terminates TLS at the NETWORK layer.
-# asyncpg must NOT attempt a PostgreSQL-level SSL upgrade (SSLRequest packet)
-# because the proxy resets the connection when it receives one.
-# We strip sslmode from the URL and pass ssl=False to connect_args so asyncpg
-# connects over plain TCP — the proxy's TLS handles encryption transparently.
+# ── Strip ?sslmode from URL query string ─────────────────────────────────────
 _parsed = urlparse(_fixed)
 _qs = parse_qs(_parsed.query, keep_blank_values=True)
-_qs.pop("sslmode", None)        # remove sslmode=require / verify-full / etc.
-_qs.pop("sslrootcert", None)    # remove any cert path
+_qs.pop("sslmode", None)
+_qs.pop("sslrootcert", None)
 DATABASE_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
 
-# ── Create async engine ──────────────────────────────────────────────────────
+# ── Detect connection type ───────────────────────────────────────────────────
+# Private Railway URL (railway.internal) — plain TCP, no SSL required
+# Public proxy URL (rlwy.net)            — SSL required at protocol level
+_is_private = "railway.internal" in DATABASE_URL
+_use_ssl = not _is_private  # only enable SSL for public proxy connections
+
+print(
+    f"DB: {'private internal' if _is_private else 'public proxy'} "
+    f"| ssl={'disabled' if not _use_ssl else 'enabled'}",
+    file=sys.stderr,
+)
+
+# ── SSL context for public proxy (fallback) ──────────────────────────────────
+_connect_args: dict = {}
+if _use_ssl:
+    import ssl as _ssl
+    _ssl_ctx = _ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = _ssl.CERT_NONE
+    _connect_args["ssl"] = _ssl_ctx
+else:
+    _connect_args["ssl"] = False   # private network — no SSL needed
+
+# ── Create engine ────────────────────────────────────────────────────────────
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     pool_size=5,
     max_overflow=10,
-    pool_pre_ping=True,     # validates connections before use
-    pool_recycle=1800,      # recycle connections every 30 min
-    connect_args={
-        "ssl": False,       # disable asyncpg SSL — Railway proxy handles TLS
-    },
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    connect_args=_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
