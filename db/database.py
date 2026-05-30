@@ -1,32 +1,39 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 import os
+import sys
 
-# Railway provides postgresql:// — SQLAlchemy async requires postgresql+asyncpg://
-# This handles both formats automatically.
-_raw_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./job_portal.db")
+# ── Read DATABASE_URL from environment ──────────────────────────────────────
+_raw_url = os.getenv("DATABASE_URL", "")
 
+if not _raw_url:
+    print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
+    print("Set it in Railway → your backend service → Variables tab.", file=sys.stderr)
+    sys.exit(1)
+
+# Railway / some providers give postgresql:// or postgres://
+# SQLAlchemy async requires postgresql+asyncpg://
 if _raw_url.startswith("postgresql://"):
     DATABASE_URL = _raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 elif _raw_url.startswith("postgres://"):
-    # Some providers use postgres:// (non-standard)
     DATABASE_URL = _raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif _raw_url.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = _raw_url  # already correct
 else:
-    DATABASE_URL = _raw_url  # sqlite+aiosqlite:// for local dev
+    print(f"ERROR: Unsupported DATABASE_URL scheme: {_raw_url[:30]}...", file=sys.stderr)
+    print("Expected postgresql:// or postgres:// URL.", file=sys.stderr)
+    sys.exit(1)
 
-# PostgreSQL needs pool settings; SQLite does not support them
-_is_postgres = DATABASE_URL.startswith("postgresql")
+# ── Create async engine ──────────────────────────────────────────────────────
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    **({
-        "pool_size": 5,
-        "max_overflow": 10,
-        "pool_pre_ping": True,
-    } if _is_postgres else {
-        "connect_args": {"check_same_thread": False},
-    })
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,       # drops stale connections automatically
+    pool_recycle=1800,        # recycle connections every 30 minutes
 )
+
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
