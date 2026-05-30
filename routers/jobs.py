@@ -1,21 +1,49 @@
+import logging
 from fastapi import APIRouter, Query, Header
 from typing import Optional
 from services.job_fetcher import fetch_jobs, ALL_PLATFORMS
+from services.gemini_service import search_jobs_ai
 from services.cache_service import get_from_memory, set_in_memory, make_search_key
-from schemas.job import SearchResponse
+from schemas.job import JobResult, SearchResponse
+import asyncio
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 RESULTS_PER_SITE = 8   # per portal — 8 × 6 portals = up to 48 results total
 
 
+def _gemini_to_job_result(j: dict) -> Optional[JobResult]:
+    """Convert a Gemini AI job dict to a JobResult schema object."""
+    try:
+        return JobResult(
+            job_id          = j.get("job_id", ""),
+            title           = j.get("title", "Untitled"),
+            company         = j.get("company", "Unknown"),
+            location        = j.get("location", ""),
+            min_salary      = j.get("min_salary"),
+            max_salary      = j.get("max_salary"),
+            salary_currency = j.get("salary_currency", "INR"),
+            salary_interval = None,
+            job_url         = j.get("job_url"),
+            platform        = j.get("platform", "ai"),
+            description     = j.get("description"),
+            date_posted     = j.get("date_posted"),
+            job_type        = j.get("job_type"),
+            is_remote       = bool(j.get("is_remote", False)),
+        )
+    except Exception as e:
+        logger.warning(f"Could not convert Gemini job: {e}")
+        return None
+
+
 @router.get("/search", response_model=SearchResponse)
 async def search_jobs(
-    q: str = Query(..., min_length=1, description="Search keywords"),
-    location: str = Query("India", description="Job location"),
-    platforms: str = Query("all", description="Comma-separated platforms or 'all'"),
-    results_per_site: int = Query(RESULTS_PER_SITE, ge=1, le=25),
-    page: int = Query(1, ge=1),
+    q:               str = Query(..., min_length=1),
+    location:        str = Query("India"),
+    platforms:       str = Query("all"),
+    results_per_site:int = Query(RESULTS_PER_SITE, ge=1, le=25),
+    page:            int = Query(1, ge=1),
     x_session_id: Optional[str] = Header(None),
 ):
     platform_list = (
@@ -29,27 +57,52 @@ async def search_jobs(
     if cached:
         jobs = cached["jobs"]
         return SearchResponse(
-            query=q,
-            location=location,
-            total=len(jobs),
-            page=page,
+            query=q, location=location,
+            total=len(jobs), page=page,
             per_page=results_per_site * len(platform_list),
-            jobs=jobs,
-            platforms_searched=platform_list,
-            cached=True,
+            jobs=jobs, platforms_searched=platform_list, cached=True,
         )
 
-    jobs = await fetch_jobs(q, location, platform_list, results_per_site)
+    # ── Run jobspy + Gemini AI search in parallel ─────────────────────────────
+    jobspy_task = fetch_jobs(q, location, platform_list, results_per_site)
+    gemini_task = search_jobs_ai(q, location, results_wanted=20)
 
-    set_in_memory(cache_key, {"jobs": jobs})
+    jobspy_results, gemini_results = await asyncio.gather(
+        jobspy_task, gemini_task,
+        return_exceptions=True,
+    )
+
+    seen_ids: set[str] = set()
+    all_jobs: list[JobResult] = []
+
+    # Add jobspy results first
+    if isinstance(jobspy_results, list):
+        for job in jobspy_results:
+            if job.job_id not in seen_ids:
+                seen_ids.add(job.job_id)
+                all_jobs.append(job)
+    else:
+        logger.warning(f"jobspy failed: {jobspy_results}")
+
+    # Merge Gemini AI results (deduplicated)
+    if isinstance(gemini_results, list):
+        for j in gemini_results:
+            job = _gemini_to_job_result(j)
+            if job and job.job_id and job.job_id not in seen_ids:
+                seen_ids.add(job.job_id)
+                all_jobs.append(job)
+    else:
+        logger.warning(f"Gemini search failed: {gemini_results}")
+
+    logger.info(f"Total combined jobs: {len(all_jobs)} (jobspy + Gemini AI)")
+
+    set_in_memory(cache_key, {"jobs": all_jobs})
 
     return SearchResponse(
-        query=q,
-        location=location,
-        total=len(jobs),
-        page=page,
+        query=q, location=location,
+        total=len(all_jobs), page=page,
         per_page=results_per_site * len(platform_list),
-        jobs=jobs,
-        platforms_searched=platform_list,
+        jobs=all_jobs,
+        platforms_searched=platform_list + (["ai"] if isinstance(gemini_results, list) and gemini_results else []),
         cached=False,
     )
