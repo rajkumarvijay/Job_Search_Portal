@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Integer, String, Float, DateTime, Text, UniqueConstraint
+from sqlalchemy import Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -43,3 +43,77 @@ class TrendingCache(Base):
     data: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAYMENTS
+# ─────────────────────────────────────────────────────────────────────────────
+class PaymentOrder(Base):
+    """
+    One row per Razorpay order. We NEVER store card data — only the Razorpay
+    order/payment IDs and our own metadata. State machine:
+       created → paid | failed
+    """
+    __tablename__ = "payment_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # Razorpay identifiers
+    razorpay_order_id:   Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    razorpay_payment_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
+
+    # What was purchased
+    product_type: Mapped[str] = mapped_column(String(32), nullable=False)   # plan_pro | plan_enterprise | resume_analysis | job_boost
+    plan_code:    Mapped[str] = mapped_column(String(32), nullable=True)    # pro | enterprise | None
+
+    # Money — stored in paise (integer) to avoid float rounding
+    amount:   Mapped[int] = mapped_column(Integer, nullable=False)          # in paise
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+
+    # State machine
+    status: Mapped[str] = mapped_column(String(16), default="created", index=True)  # created|paid|failed
+
+    # Idempotency — client-supplied key prevents duplicate orders
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=True, unique=True, index=True)
+
+    # Audit
+    notes:      Mapped[str] = mapped_column(Text, nullable=True)            # JSON metadata
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    paid_at:    Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+
+class Subscription(Base):
+    """
+    Active subscription per session. One active row per session_id.
+    Free users simply have no row (or status=expired).
+    """
+    __tablename__ = "subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+
+    plan_code: Mapped[str] = mapped_column(String(32), default="free")      # free|pro|enterprise
+    status:    Mapped[str] = mapped_column(String(16), default="active")    # active|expired|cancelled
+
+    # Links to the order that activated this subscription
+    last_order_id: Mapped[str] = mapped_column(String(64), nullable=True)
+
+    current_period_start: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    current_period_end:   Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WebhookEvent(Base):
+    """
+    Idempotent webhook log. Razorpay may deliver the same event multiple times;
+    we dedupe on event_id so processing is exactly-once.
+    """
+    __tablename__ = "webhook_events"
+
+    event_id:    Mapped[str] = mapped_column(String(64), primary_key=True)  # Razorpay x-razorpay-event-id
+    event_type:  Mapped[str] = mapped_column(String(64), nullable=False)
+    processed:   Mapped[bool] = mapped_column(Boolean, default=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
