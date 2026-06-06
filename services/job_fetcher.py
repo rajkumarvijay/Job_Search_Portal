@@ -6,40 +6,32 @@ from typing import Optional
 import pandas as pd
 from jobspy import scrape_jobs
 from schemas.job import JobResult
+from services.naukri_custom import fetch_naukri
+from services.glassdoor_custom import fetch_glassdoor
+from services.fallback_fetcher import fetch_remotive, fetch_arbeitnow
 
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=8)
 
 ALL_PLATFORMS = ["linkedin", "indeed", "glassdoor", "naukri", "ziprecruiter", "google"]
 
-# Per-portal timeout — generous to handle slow portals
+# Portals handled by jobspy directly
+JOBSPY_PLATFORMS = {"linkedin", "indeed"}
+
+# Per-portal timeout
 PORTAL_TIMEOUT = {
-    "linkedin":     40,
-    "indeed":       45,
-    "glassdoor":    45,
-    "naukri":       50,
-    "ziprecruiter": 40,
-    "google":       40,
+    "linkedin":     45,
+    "indeed":       50,
+    "glassdoor":    40,
+    "naukri":       40,
+    "ziprecruiter": 35,
+    "google":       35,
 }
 
-# Per-portal scrape kwargs — each portal has different requirements
-PORTAL_KWARGS = {
-    "linkedin": {
-        "linkedin_fetch_description": False,
-    },
-    "indeed": {
-        "country_indeed": "India",
-    },
-    "glassdoor": {},
-    "naukri": {},
-    "ziprecruiter": {},
-    "google": {},
-}
-
-# Location overrides per portal
-# ZipRecruiter is US-focused; use "Remote" to still get relevant results
-PORTAL_LOCATION = {
-    "ziprecruiter": "Remote",
+# jobspy kwargs per portal
+JOBSPY_KWARGS = {
+    "linkedin": {"linkedin_fetch_description": False},
+    "indeed":   {"country_indeed": "India"},
 }
 
 
@@ -106,31 +98,62 @@ def _normalize_dataframe(df: pd.DataFrame) -> list[JobResult]:
     return jobs
 
 
-def _scrape_one_portal(portal: str, query: str, location: str, results: int) -> list[JobResult]:
-    """Scrape a single portal in a thread. Never raises — always returns a list."""
-    portal_location = PORTAL_LOCATION.get(portal, location)
-    extra_kwargs    = PORTAL_KWARGS.get(portal, {})
-
+def _scrape_jobspy(portal: str, query: str, location: str, results: int) -> list[JobResult]:
+    """Scrape a portal using jobspy. Returns [] on any failure."""
+    extra_kwargs = JOBSPY_KWARGS.get(portal, {})
     try:
         df = scrape_jobs(
             site_name      = [portal],
             search_term    = query,
-            location       = portal_location,
+            location       = location,
             results_wanted = results,
-            hours_old      = 168,      # jobs posted in the last 7 days
+            hours_old      = 168,
             **extra_kwargs,
         )
-
         if df is None or df.empty:
-            logger.info(f"[{portal}] 0 results (empty response)")
+            logger.info(f"[{portal}] 0 results (empty)")
             return []
-
         jobs = _normalize_dataframe(df)
-        logger.info(f"[{portal}] ✓ {len(jobs)} jobs fetched")
+        logger.info(f"[{portal}] ✓ {len(jobs)} jobs (jobspy)")
         return jobs
+    except Exception as e:
+        logger.warning(f"[{portal}] ✗ jobspy error: {type(e).__name__}: {e}")
+        return []
+
+
+def _scrape_one_portal(portal: str, query: str, location: str, results: int) -> list[JobResult]:
+    """Route each portal to its working scraper. Never raises."""
+    try:
+        if portal == "naukri":
+            jobs = fetch_naukri(query, location, results)
+            # If custom scraper fails, try jobspy as fallback
+            if not jobs:
+                logger.info(f"[naukri] custom failed, trying jobspy fallback")
+                jobs = _scrape_jobspy("naukri", query, location, results)
+            return jobs
+
+        if portal == "glassdoor":
+            jobs = fetch_glassdoor(query, location, results)
+            if not jobs:
+                logger.info(f"[glassdoor] custom failed, trying jobspy fallback")
+                jobs = _scrape_jobspy("glassdoor", query, location, results)
+            return jobs
+
+        if portal == "ziprecruiter":
+            # ZipRecruiter is US-only and blocked — go straight to Arbeitnow fallback
+            jobs = fetch_arbeitnow(query, results, platform_label="ziprecruiter")
+            return jobs
+
+        if portal == "google":
+            # Google Jobs scraper is blocked; go straight to Remotive fallback
+            jobs = fetch_remotive(query, results, platform_label="google")
+            return jobs
+
+        # LinkedIn and Indeed via jobspy (working)
+        return _scrape_jobspy(portal, query, location, results)
 
     except Exception as e:
-        logger.warning(f"[{portal}] ✗ failed: {type(e).__name__}: {e}")
+        logger.warning(f"[{portal}] ✗ unexpected error: {type(e).__name__}: {e}")
         return []
 
 
@@ -178,7 +201,6 @@ async def fetch_jobs(
                 seen_ids.add(job.job_id)
                 all_jobs.append(job)
 
-    # Log per-portal summary
     per_portal = {}
     for job in all_jobs:
         per_portal[job.platform] = per_portal.get(job.platform, 0) + 1
