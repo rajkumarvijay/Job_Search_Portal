@@ -5,6 +5,18 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
 
+class User(Base):
+    """Portal user account — email + bcrypt password, verified by JWT."""
+    __tablename__ = "users"
+
+    id:              Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name:            Mapped[str]      = mapped_column(String(256), nullable=False)
+    email:           Mapped[str]      = mapped_column(String(256), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str]      = mapped_column(String(256), nullable=False)
+    is_active:       Mapped[bool]     = mapped_column(Boolean, default=True)
+    created_at:      Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SearchHistory(Base):
     __tablename__ = "search_history"
 
