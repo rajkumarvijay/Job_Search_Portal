@@ -1,5 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
+from datetime import datetime
 
 
 class JobResult(BaseModel):
@@ -19,6 +20,46 @@ class JobResult(BaseModel):
     is_remote: Optional[bool] = None
     company_logo: Optional[str] = None
     company_url: Optional[str] = None
+
+
+class PostJobRequest(BaseModel):
+    title:           str
+    company:         str
+    location:        str
+    job_type:        Optional[str] = None
+    work_mode:       Optional[str] = None
+    experience:      Optional[str] = None
+    min_salary:      Optional[float] = None
+    max_salary:      Optional[float] = None
+    salary_currency: str = "INR"
+    description:     str
+    skills:          Optional[str] = None
+    contact_email:   str
+    apply_url:       Optional[str] = None
+    company_url:     Optional[str] = None
+
+
+class PostedJobOut(BaseModel):
+    job_id:          str
+    title:           str
+    company:         str
+    location:        str
+    job_type:        Optional[str] = None
+    work_mode:       Optional[str] = None
+    experience:      Optional[str] = None
+    min_salary:      Optional[float] = None
+    max_salary:      Optional[float] = None
+    salary_currency: str = "INR"
+    description:     str
+    skills:          Optional[str] = None
+    contact_email:   str
+    apply_url:       Optional[str] = None
+    company_url:     Optional[str] = None
+    is_active:       bool = True
+    posted_at:       datetime
+
+    class Config:
+        from_attributes = True
 
 
 class SearchResponse(BaseModel):

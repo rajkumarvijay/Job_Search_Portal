@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from db.init_db import init_db
-from routers import jobs, trending, history, saved, ai, payments
+from routers import jobs, trending, history, saved, ai, payments, post_jobs
 from scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -43,7 +43,8 @@ app.include_router(trending.router, prefix="/api/v1")
 app.include_router(history.router,  prefix="/api/v1")
 app.include_router(saved.router,    prefix="/api/v1")
 app.include_router(ai.router,       prefix="/api/v1")
-app.include_router(payments.router, prefix="/api/v1")
+app.include_router(payments.router,   prefix="/api/v1")
+app.include_router(post_jobs.router,  prefix="/api/v1")
 
 
 # ── Root & health endpoints ───────────────────────────────────────────────────

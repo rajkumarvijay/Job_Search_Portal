@@ -1,6 +1,10 @@
 import logging
-from fastapi import APIRouter, Query, Header
+from fastapi import APIRouter, Query, Header, Depends
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
+from db.database import get_db
+from db.models import PostedJob
 from services.job_fetcher import fetch_jobs, ALL_PLATFORMS
 from services.gemini_service import search_jobs_ai
 from services.cache_service import get_from_memory, set_in_memory, make_search_key
@@ -37,6 +41,28 @@ def _gemini_to_job_result(j: dict) -> Optional[JobResult]:
         return None
 
 
+def _posted_to_job_result(p: PostedJob) -> JobResult:
+    """Convert a PostedJob DB row into a JobResult schema object."""
+    is_remote = (p.work_mode or "").lower() == "remote"
+    apply = p.apply_url or f"mailto:{p.contact_email}"
+    return JobResult(
+        job_id          = p.job_id,
+        title           = p.title,
+        company         = p.company,
+        location        = p.location,
+        min_salary      = p.min_salary,
+        max_salary      = p.max_salary,
+        salary_currency = p.salary_currency or "INR",
+        salary_interval = "yearly",
+        job_url         = apply,
+        platform        = "portal",
+        description     = p.description,
+        date_posted     = p.posted_at.strftime("%Y-%m-%d") if p.posted_at else None,
+        job_type        = p.job_type,
+        is_remote       = is_remote,
+    )
+
+
 @router.get("/search", response_model=SearchResponse)
 async def search_jobs(
     q:               str = Query(..., min_length=1),
@@ -45,6 +71,7 @@ async def search_jobs(
     results_per_site:int = Query(RESULTS_PER_SITE, ge=1, le=25),
     page:            int = Query(1, ge=1),
     x_session_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
 ):
     platform_list = (
         ALL_PLATFORMS
@@ -94,7 +121,27 @@ async def search_jobs(
     else:
         logger.warning(f"Gemini search failed: {gemini_results}")
 
-    logger.info(f"Total combined jobs: {len(all_jobs)} (jobspy + Gemini AI)")
+    # ── Merge posted jobs from DB ─────────────────────────────────────────────
+    try:
+        kw = f"%{q}%"
+        stmt = select(PostedJob).where(
+            PostedJob.is_active == True,
+            or_(
+                PostedJob.title.ilike(kw),
+                PostedJob.description.ilike(kw),
+                PostedJob.skills.ilike(kw),
+                PostedJob.company.ilike(kw),
+            )
+        ).limit(10)
+        posted_rows = (await db.execute(stmt)).scalars().all()
+        for p in posted_rows:
+            if p.job_id not in seen_ids:
+                seen_ids.add(p.job_id)
+                all_jobs.insert(0, _posted_to_job_result(p))   # surface at top
+    except Exception as e:
+        logger.warning(f"Could not fetch posted jobs: {e}")
+
+    logger.info(f"Total combined jobs: {len(all_jobs)} (jobspy + Gemini AI + portal posts)")
 
     set_in_memory(cache_key, {"jobs": all_jobs})
 

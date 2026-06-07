@@ -1,4 +1,5 @@
 from datetime import datetime
+import uuid
 from sqlalchemy import Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
@@ -104,6 +105,45 @@ class Subscription(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PostedJob(Base):
+    """
+    Jobs posted directly by employers / recruiters through the portal.
+    Shown in search results alongside scraped jobs (platform = 'portal').
+    """
+    __tablename__ = "posted_jobs"
+
+    id:       Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id:   Mapped[str] = mapped_column(String(64), unique=True, index=True,
+                                          default=lambda: f"portal_{uuid.uuid4().hex[:12]}")
+
+    # Core fields
+    title:    Mapped[str] = mapped_column(String(512), nullable=False)
+    company:  Mapped[str] = mapped_column(String(256), nullable=False)
+    location: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    # Classification
+    job_type:   Mapped[str] = mapped_column(String(64),  nullable=True)   # Full-time | Part-time | Contract | Internship | Freelance
+    work_mode:  Mapped[str] = mapped_column(String(64),  nullable=True)   # On-site | Remote | Hybrid
+    experience: Mapped[str] = mapped_column(String(64),  nullable=True)   # Fresher | 1-3 years | …
+
+    # Compensation
+    min_salary:      Mapped[float] = mapped_column(Float,      nullable=True)
+    max_salary:      Mapped[float] = mapped_column(Float,      nullable=True)
+    salary_currency: Mapped[str]   = mapped_column(String(8),  default="INR")
+
+    # Content
+    description: Mapped[str] = mapped_column(Text,         nullable=False)
+    skills:      Mapped[str] = mapped_column(Text,         nullable=True)   # comma-separated
+
+    # Contact / apply
+    contact_email: Mapped[str] = mapped_column(String(256), nullable=False)
+    apply_url:     Mapped[str] = mapped_column(Text,        nullable=True)
+    company_url:   Mapped[str] = mapped_column(Text,        nullable=True)
+
+    is_active:  Mapped[bool]     = mapped_column(Boolean,  default=True)
+    posted_at:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class WebhookEvent(Base):
