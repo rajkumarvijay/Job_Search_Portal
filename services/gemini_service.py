@@ -171,8 +171,8 @@ async def search_jobs_ai(
 # 2. Resume ATS Analysis
 # ─────────────────────────────────────────────────────────────────────────────
 _RESUME_PROMPT = """
-You are an expert ATS (Applicant Tracking System) analyst and career coach.
-Analyse the following resume and return ONLY a valid JSON object — no markdown, no extra text.
+You are a senior ATS analyst and tech career coach with 15+ years of recruitment experience.
+Analyse the resume below and return ONLY a valid JSON object — no markdown, no explanation.
 
 Target role (if provided): "{target_role}"
 
@@ -181,34 +181,46 @@ Resume text:
 {resume_text}
 \"\"\"
 
-Return this exact JSON structure:
+Return EXACTLY this JSON structure (all fields required):
 {{
   "ats_score": <integer 0-100>,
-  "grade": "A" | "B" | "C" | "D" | "F",
-  "summary": "2-3 sentence overall assessment",
-  "strengths": ["strength1", "strength2", "strength3"],
+  "grade": "A+" | "A" | "B" | "C" | "D" | "F",
+  "experience_level": "Fresher" | "Junior" | "Mid-Level" | "Senior" | "Lead/Principal",
+  "years_experience": <number or null>,
+  "summary": "2-3 sentence honest overall assessment mentioning key strengths and biggest gap",
+  "section_scores": {{
+    "contact_info":           <integer 0-10>,
+    "professional_summary":   <integer 0-15>,
+    "work_experience":        <integer 0-30>,
+    "skills":                 <integer 0-20>,
+    "education":              <integer 0-15>,
+    "keywords_and_ats":       <integer 0-10>
+  }},
+  "top_skills": ["up to 10 key skills found in this resume"],
+  "recommended_roles": ["3-5 specific job titles this person is best suited for, most relevant first"],
+  "strengths": ["3-5 specific strengths with brief explanation"],
   "improvements": [
     {{
-      "category": "Keywords",
-      "issue": "what is missing or wrong",
-      "fix": "exactly what to add or change",
+      "category": "Keywords" | "Formatting" | "Work Experience" | "Skills Section" | "Summary" | "Quantification" | "Education" | "ATS Compatibility",
+      "issue": "specific problem found",
+      "fix": "exact actionable fix with example if possible",
       "impact": "High" | "Medium" | "Low"
     }}
   ],
-  "missing_keywords": ["keyword1", "keyword2", "keyword3"],
-  "recommended_keywords": ["add these keywords to boost ATS score"],
-  "format_issues": ["formatting problem 1", "formatting problem 2"],
-  "quick_wins": ["do this immediately to improve score"]
+  "missing_keywords": ["important keywords absent from resume for the target role"],
+  "recommended_keywords": ["add these to significantly boost ATS pass rate"],
+  "format_issues": ["specific formatting problems that hurt ATS parsing"],
+  "quick_wins": ["top 3-5 changes that take under 10 minutes and raise score the most"]
 }}
 
-Score rubric:
-- 90-100: ATS-optimised, ready to apply
-- 70-89:  Good, minor tweaks needed
-- 50-69:  Average, several improvements needed
-- 30-49:  Needs significant work
-- 0-29:   Major overhaul required
+Scoring rubric:
+- 90-100 (A+/A): ATS-optimised, strong keywords, quantified achievements, ready to apply
+- 75-89  (B):    Good resume, minor keyword or formatting gaps
+- 55-74  (C):    Average, several improvements needed to pass ATS filters
+- 35-54  (D):    Weak ATS compatibility, needs significant rework
+- 0-34   (F):    Major overhaul required — likely filtered out before human review
 
-Be specific, actionable, and honest.
+Be brutally honest, specific, and actionable. Tailor feedback to the target role when provided.
 """.strip()
 
 
@@ -219,13 +231,26 @@ def _run_resume_analysis(resume_text: str, target_role: str) -> dict:
         raw_text = _call_with_fallback(prompt)
         raw    = _extract_json(raw_text)
         result = json.loads(raw)
+
+        # Back-fill optional fields that older prompts might omit
+        result.setdefault("section_scores", {})
+        result.setdefault("top_skills", [])
+        result.setdefault("recommended_roles", [])
+        result.setdefault("experience_level", "Unknown")
+        result.setdefault("years_experience", None)
+        result.setdefault("strengths", [])
+        result.setdefault("improvements", [])
+        result.setdefault("missing_keywords", [])
+        result.setdefault("recommended_keywords", [])
+        result.setdefault("format_issues", [])
+        result.setdefault("quick_wins", [])
+
         logger.info(f"[Gemini] Resume analysed — ATS score: {result.get('ats_score')}")
         return result
     except json.JSONDecodeError as e:
         logger.warning(f"[Gemini] Resume JSON parse error: {e}")
         return {"error": "Could not parse Gemini response. Try again.", "ats_score": 0}
     except ValueError as e:
-        # API key error — bubble up cleanly
         raise
     except Exception as e:
         logger.warning(f"[Gemini] Resume analysis error: {e}")
@@ -244,3 +269,103 @@ async def analyze_resume(resume_text: str, target_role: str = "") -> dict:
     except asyncio.TimeoutError:
         logger.warning("[Gemini] Resume analysis timed out")
         return {"error": "Analysis timed out. Please try again.", "ats_score": 0}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Resume → Job Recommendations
+# ─────────────────────────────────────────────────────────────────────────────
+_RECO_PROMPT = """
+You are a job matching engine. Based on the extracted resume data, find {count} highly relevant
+real job opportunities and return ONLY a valid JSON array — no markdown, no explanation.
+
+Candidate profile:
+- Top skills: {skills}
+- Recommended roles: {roles}
+- Experience level: {level}
+- Target role: {target_role}
+
+Each job object must have EXACTLY these fields:
+{{
+  "title": "specific job title",
+  "company": "real company name",
+  "location": "city, country (India-focused unless skills suggest otherwise)",
+  "job_url": "https://www.linkedin.com/jobs/search/?keywords={query_encoded}",
+  "description": "2 sentence description of what makes this a strong match for this candidate",
+  "min_salary": null or number (annual INR in lakhs, e.g. 12 means ₹12 LPA),
+  "max_salary": null or number,
+  "salary_currency": "INR",
+  "job_type": "Full-time",
+  "is_remote": true or false,
+  "platform": "linkedin" or "naukri" or "indeed",
+  "match_score": <integer 70-99 — how well this job matches the candidate's profile>,
+  "match_reason": "1 sentence explaining why this is a great match"
+}}
+
+Return exactly {count} jobs. Prioritise relevance and match quality.
+""".strip()
+
+
+def _run_job_recommendations(
+    skills: list[str],
+    roles: list[str],
+    level: str,
+    target_role: str,
+    count: int,
+) -> list[dict]:
+    if not skills and not roles:
+        return []
+    query_encoded = (roles[0] if roles else "software engineer").replace(" ", "+")
+    prompt = _RECO_PROMPT.format(
+        skills=", ".join(skills[:8]),
+        roles=", ".join(roles[:4]),
+        level=level,
+        target_role=target_role or roles[0] if roles else "Software Engineer",
+        count=count,
+        query_encoded=query_encoded,
+    )
+    try:
+        raw_text = _call_with_fallback(prompt)
+        raw  = _extract_json(raw_text)
+        jobs = json.loads(raw)
+        if not isinstance(jobs, list):
+            return []
+        # Assign unique job_ids
+        for j in jobs:
+            raw_id = f"{j.get('job_url','')}{j.get('title','')}{j.get('company','')}".lower()
+            j["job_id"] = hashlib.md5(raw_id.encode()).hexdigest()[:16]
+            j.setdefault("salary_currency", "INR")
+            j.setdefault("is_remote", False)
+            j.setdefault("platform", "ai")
+            j.setdefault("match_score", 80)
+            j.setdefault("match_reason", "Matches your skills and experience level")
+        logger.info(f"[Gemini] {len(jobs)} job recommendations generated")
+        return jobs
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"[Gemini] Job reco JSON parse error: {e}")
+        return []
+    except Exception as e:
+        logger.warning(f"[Gemini] Job reco error: {e}")
+        return []
+
+
+async def get_resume_job_recommendations(
+    skills: list[str],
+    roles: list[str],
+    level: str,
+    target_role: str = "",
+    count: int = 6,
+) -> list[dict]:
+    """Return AI-curated job recommendations for a candidate profile."""
+    loop = asyncio.get_event_loop()
+    try:
+        jobs = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor, _run_job_recommendations,
+                skills, roles, level, target_role, count,
+            ),
+            timeout=45,
+        )
+        return jobs
+    except asyncio.TimeoutError:
+        logger.warning("[Gemini] Job recommendations timed out")
+        return []
