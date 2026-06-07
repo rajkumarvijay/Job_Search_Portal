@@ -6,15 +6,18 @@ from .database import Base
 
 
 class User(Base):
-    """Portal user account — email + bcrypt password, verified by JWT."""
+    """Portal user account — email/password or Google OAuth, verified by JWT."""
     __tablename__ = "users"
 
-    id:              Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name:            Mapped[str]      = mapped_column(String(256), nullable=False)
-    email:           Mapped[str]      = mapped_column(String(256), unique=True, nullable=False, index=True)
-    hashed_password: Mapped[str]      = mapped_column(String(256), nullable=False)
-    is_active:       Mapped[bool]     = mapped_column(Boolean, default=True)
-    created_at:      Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id:              Mapped[int]           = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name:            Mapped[str]           = mapped_column(String(256), nullable=False)
+    email:           Mapped[str]           = mapped_column(String(256), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str | None]    = mapped_column(String(256), nullable=True)   # NULL for Google-only accounts
+    google_id:       Mapped[str | None]    = mapped_column(String(128), unique=True, nullable=True, index=True)
+    auth_provider:   Mapped[str]           = mapped_column(String(32),  nullable=False, default="email")  # email | google
+    avatar_url:      Mapped[str | None]    = mapped_column(Text, nullable=True)
+    is_active:       Mapped[bool]          = mapped_column(Boolean, default=True)
+    created_at:      Mapped[datetime]      = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class SearchHistory(Base):

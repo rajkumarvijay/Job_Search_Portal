@@ -44,13 +44,19 @@ class LoginRequest(BaseModel):
 
 
 class UserOut(BaseModel):
-    id:         int
-    name:       str
-    email:      str
-    created_at: datetime
+    id:            int
+    name:          str
+    email:         str
+    auth_provider: str = "email"
+    avatar_url:    Optional[str] = None
+    created_at:    datetime
 
     class Config:
         from_attributes = True
+
+
+class GoogleAuthRequest(BaseModel):
+    access_token: str   # Google OAuth2 access token obtained from frontend
 
 
 class TokenResponse(BaseModel):
