@@ -62,6 +62,29 @@ class PostedJobOut(BaseModel):
         from_attributes = True
 
 
+class EditJobRequest(BaseModel):
+    """All fields are optional except owner_email (used for verification)."""
+    owner_email:     str                   # must match stored contact_email
+    title:           Optional[str] = None
+    company:         Optional[str] = None
+    location:        Optional[str] = None
+    job_type:        Optional[str] = None
+    work_mode:       Optional[str] = None
+    experience:      Optional[str] = None
+    min_salary:      Optional[float] = None
+    max_salary:      Optional[float] = None
+    salary_currency: Optional[str] = None
+    description:     Optional[str] = None
+    skills:          Optional[str] = None
+    contact_email:   Optional[str] = None   # new email if the poster wants to change it
+    apply_url:       Optional[str] = None
+    company_url:     Optional[str] = None
+
+
+class DeleteJobRequest(BaseModel):
+    contact_email: str   # must match stored contact_email
+
+
 class SearchResponse(BaseModel):
     query: str
     location: str
