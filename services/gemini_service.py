@@ -171,8 +171,8 @@ async def search_jobs_ai(
 # 2. Resume ATS Analysis
 # ─────────────────────────────────────────────────────────────────────────────
 _RESUME_PROMPT = """
-You are a senior ATS analyst and tech career coach with 15+ years of recruitment experience.
-Analyse the resume below and return ONLY a valid JSON object — no markdown, no explanation.
+You are a senior ATS analyst and tech career coach with 15+ years of recruitment experience at top Indian and global tech companies.
+Deeply analyse the resume below and return ONLY a valid JSON object — no markdown, no explanation, no prose outside the JSON.
 
 Target role (if provided): "{target_role}"
 
@@ -181,13 +181,14 @@ Resume text:
 {resume_text}
 \"\"\"
 
-Return EXACTLY this JSON structure (all fields required):
+Return EXACTLY this JSON structure (every field is required — use empty arrays/null where data is absent):
 {{
   "ats_score": <integer 0-100>,
   "grade": "A+" | "A" | "B" | "C" | "D" | "F",
   "experience_level": "Fresher" | "Junior" | "Mid-Level" | "Senior" | "Lead/Principal",
   "years_experience": <number or null>,
-  "summary": "2-3 sentence honest overall assessment mentioning key strengths and biggest gap",
+  "summary": "3-4 sentence honest overall assessment: key strengths, experience level, ATS readiness, and single biggest gap",
+
   "section_scores": {{
     "contact_info":           <integer 0-10>,
     "professional_summary":   <integer 0-15>,
@@ -196,31 +197,94 @@ Return EXACTLY this JSON structure (all fields required):
     "education":              <integer 0-15>,
     "keywords_and_ats":       <integer 0-10>
   }},
-  "top_skills": ["up to 10 key skills found in this resume"],
-  "recommended_roles": ["3-5 specific job titles this person is best suited for, most relevant first"],
-  "strengths": ["3-5 specific strengths with brief explanation"],
-  "improvements": [
+
+  "extracted_skills": {{
+    "technical":  ["all technical/hard skills found — languages, frameworks, tools, platforms, databases, cloud"],
+    "soft":       ["soft skills explicitly mentioned — leadership, communication, teamwork, etc."],
+    "tools":      ["specific tools, software, IDEs, CI/CD, monitoring — e.g. Git, Docker, Jenkins, Grafana"],
+    "certifications": ["any certifications or credentials mentioned"]
+  }},
+
+  "top_skills": ["top 10 most relevant skills for the target role, ranked by relevance"],
+
+  "experience_breakdown": [
     {{
-      "category": "Keywords" | "Formatting" | "Work Experience" | "Skills Section" | "Summary" | "Quantification" | "Education" | "ATS Compatibility",
-      "issue": "specific problem found",
-      "fix": "exact actionable fix with example if possible",
-      "impact": "High" | "Medium" | "Low"
+      "company":       "company name",
+      "title":         "job title",
+      "duration":      "e.g. Jan 2022 – Mar 2024 (2 yrs 2 mo)",
+      "is_quantified": true | false,
+      "key_achievements": ["up to 3 notable achievements or responsibilities extracted from resume"],
+      "impact_score":  <integer 1-10 — how well impact/results are shown>
     }}
   ],
-  "missing_keywords": ["important keywords absent from resume for the target role"],
-  "recommended_keywords": ["add these to significantly boost ATS pass rate"],
-  "format_issues": ["specific formatting problems that hurt ATS parsing"],
-  "quick_wins": ["top 3-5 changes that take under 10 minutes and raise score the most"]
+
+  "projects": [
+    {{
+      "name":         "project name",
+      "tech_stack":   ["technologies used"],
+      "description":  "1-2 sentence summary of what was built and its impact",
+      "has_metrics":  true | false,
+      "github_mentioned": true | false
+    }}
+  ],
+
+  "education": [
+    {{
+      "degree":      "e.g. B.Tech Computer Science",
+      "institution": "college/university name",
+      "year":        "graduation year or expected year",
+      "gpa_cgpa":    "GPA/CGPA if mentioned, else null"
+    }}
+  ],
+
+  "recommended_roles": ["4-6 specific job titles this person is best suited for, most relevant first"],
+
+  "strengths": [
+    {{
+      "title":       "strength name",
+      "explanation": "specific evidence from the resume supporting this strength"
+    }}
+  ],
+
+  "improvements": [
+    {{
+      "category": "Keywords" | "Formatting" | "Work Experience" | "Skills Section" | "Summary" | "Quantification" | "Education" | "ATS Compatibility" | "Projects",
+      "issue":    "specific problem found with direct reference to resume content",
+      "fix":      "exact actionable fix — include a rewritten example sentence where helpful",
+      "impact":   "High" | "Medium" | "Low"
+    }}
+  ],
+
+  "missing_keywords": ["important ATS keywords absent from resume that are critical for the target role"],
+  "recommended_keywords": ["add these exact words/phrases to significantly boost ATS pass rate — include both acronyms and full forms"],
+
+  "keyword_density": {{
+    "present":  ["keywords already in resume that are ATS-valuable"],
+    "overused": ["words used too frequently that dilute impact"]
+  }},
+
+  "format_issues": ["specific formatting problems that hurt ATS parsing — e.g. tables, headers, graphics, fonts"],
+
+  "quick_wins": [
+    {{
+      "action":         "specific change to make",
+      "time_required":  "e.g. 5 minutes",
+      "score_impact":   "+3-5 points"
+    }}
+  ],
+
+  "indian_job_market_tips": ["2-3 tips specific to the Indian job market — FAANG India, product startups, service companies, Naukri/LinkedIn optimisation"]
 }}
 
 Scoring rubric:
-- 90-100 (A+/A): ATS-optimised, strong keywords, quantified achievements, ready to apply
+- 90-100 (A+/A): ATS-optimised, strong keywords, quantified achievements, clean format, ready to apply
 - 75-89  (B):    Good resume, minor keyword or formatting gaps
 - 55-74  (C):    Average, several improvements needed to pass ATS filters
 - 35-54  (D):    Weak ATS compatibility, needs significant rework
 - 0-34   (F):    Major overhaul required — likely filtered out before human review
 
-Be brutally honest, specific, and actionable. Tailor feedback to the target role when provided.
+Be brutally honest, specific, and actionable. Every improvement must reference actual content from the resume.
+Tailor all feedback to the target role when provided. If no target role, infer from the resume.
 """.strip()
 
 
@@ -232,7 +296,7 @@ def _run_resume_analysis(resume_text: str, target_role: str) -> dict:
         raw    = _extract_json(raw_text)
         result = json.loads(raw)
 
-        # Back-fill optional fields that older prompts might omit
+        # Back-fill all fields so callers never get KeyError
         result.setdefault("section_scores", {})
         result.setdefault("top_skills", [])
         result.setdefault("recommended_roles", [])
@@ -244,6 +308,13 @@ def _run_resume_analysis(resume_text: str, target_role: str) -> dict:
         result.setdefault("recommended_keywords", [])
         result.setdefault("format_issues", [])
         result.setdefault("quick_wins", [])
+        # New enriched fields
+        result.setdefault("extracted_skills", {"technical": [], "soft": [], "tools": [], "certifications": []})
+        result.setdefault("experience_breakdown", [])
+        result.setdefault("projects", [])
+        result.setdefault("education", [])
+        result.setdefault("keyword_density", {"present": [], "overused": []})
+        result.setdefault("indian_job_market_tips", [])
 
         logger.info(f"[Gemini] Resume analysed — ATS score: {result.get('ats_score')}")
         return result

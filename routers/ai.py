@@ -5,7 +5,6 @@ AI-powered routes:
   POST /api/v1/ai/resume/full        — ATS analysis + AI job recommendations
 """
 
-import asyncio
 import io
 import logging
 from fastapi import APIRouter, Query, UploadFile, File, Form, HTTPException
@@ -17,6 +16,8 @@ from services.gemini_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
 # ── AI job search ──────────────────────────────────────────────────────────────
@@ -42,7 +43,6 @@ async def analyse_resume(
     file:        UploadFile = File(...),
     target_role: str        = Form(default=""),
 ):
-    """ATS analysis only — fast path used by the search-bar button."""
     resume_text = await _read_resume(file)
     try:
         result = await analyze_resume(resume_text, target_role)
@@ -61,19 +61,13 @@ async def analyse_resume_full(
     target_role: str        = Form(default=""),
     job_count:   int        = Form(default=6),
 ):
-    """
-    Full analysis: ATS report + AI-curated job recommendations in parallel.
-    Used by the dedicated /resume page.
-    """
     resume_text = await _read_resume(file)
     try:
-        # Step 1 — run ATS analysis first (jobs need skills/roles from it)
         ats_result = await analyze_resume(resume_text, target_role)
 
         if ats_result.get("error"):
             return {**ats_result, "recommended_jobs": []}
 
-        # Step 2 — fetch job recommendations in parallel with returning ATS data
         skills = ats_result.get("top_skills", [])
         roles  = ats_result.get("recommended_roles", [])
         level  = ats_result.get("experience_level", "Mid-Level")
@@ -97,24 +91,29 @@ async def analyse_resume_full(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 async def _read_resume(file: UploadFile) -> str:
-    allowed_types = {
+    ct   = file.content_type or ""
+    name = (file.filename or "").lower()
+
+    allowed_ext  = (".pdf", ".docx", ".txt")
+    allowed_ct   = {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "text/plain",
     }
-    ct   = file.content_type or ""
-    name = (file.filename or "").lower()
 
-    if ct not in allowed_types and not any(name.endswith(e) for e in (".pdf", ".docx", ".txt")):
+    if ct not in allowed_ct and not any(name.endswith(e) for e in allowed_ext):
         raise HTTPException(status_code=400, detail="Only PDF, DOCX, or TXT files are accepted")
 
     content = await file.read()
-    if len(content) > 5 * 1024 * 1024:
+    if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
 
     text = _extract_text(content, name, ct)
     if not text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from the file. Make sure the file is not scanned/image-only.")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract text from the file. Make sure it is not a scanned/image-only PDF.",
+        )
     return text
 
 
@@ -127,30 +126,93 @@ def _extract_text(content: bytes, filename: str, content_type: str) -> str:
 
 
 def _extract_pdf(content: bytes) -> str:
+    """
+    Try pdfplumber first (preserves table/column layout better),
+    fall back to pypdf if pdfplumber yields nothing.
+    """
+    text = _pdf_pdfplumber(content)
+    if text.strip():
+        return text
+    logger.warning("[PDF] pdfplumber returned empty — falling back to pypdf")
+    return _pdf_pypdf(content)
+
+
+def _pdf_pdfplumber(content: bytes) -> str:
+    try:
+        import pdfplumber
+        pages = []
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+                # Also pull text from any tables on the page
+                for table in page.extract_tables():
+                    for row in table:
+                        row_text = " | ".join(cell or "" for cell in row if cell)
+                        if row_text.strip():
+                            page_text += "\n" + row_text
+                pages.append(page_text)
+        return "\n".join(pages)
+    except Exception as e:
+        logger.warning(f"[PDF] pdfplumber error: {e}")
+        return ""
+
+
+def _pdf_pypdf(content: bytes) -> str:
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(content))
         return "\n".join(page.extract_text() or "" for page in reader.pages)
     except Exception as e:
-        logger.warning(f"PDF extraction failed: {e}")
+        logger.warning(f"[PDF] pypdf error: {e}")
         return ""
 
 
 def _extract_docx(content: bytes) -> str:
+    """
+    Use python-docx to extract paragraphs and table cells,
+    preserving section structure (headings, bullets, tables).
+    Falls back to raw XML parsing if python-docx is unavailable.
+    """
+    text = _docx_python_docx(content)
+    if text.strip():
+        return text
+    logger.warning("[DOCX] python-docx returned empty — falling back to XML")
+    return _docx_xml(content)
+
+
+def _docx_python_docx(content: bytes) -> str:
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(content))
+        lines = []
+
+        for para in doc.paragraphs:
+            t = para.text.strip()
+            if t:
+                lines.append(t)
+
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    lines.append(row_text)
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"[DOCX] python-docx error: {e}")
+        return ""
+
+
+def _docx_xml(content: bytes) -> str:
     try:
         import zipfile
         import xml.etree.ElementTree as ET
         with zipfile.ZipFile(io.BytesIO(content)) as z:
             with z.open("word/document.xml") as f:
                 tree = ET.parse(f)
-        texts = [
-            node.text
-            for node in tree.iter(
-                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
-            )
-            if node.text
-        ]
+        ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        texts = [node.text for node in tree.iter(f"{ns}t") if node.text]
         return " ".join(texts)
     except Exception as e:
-        logger.warning(f"DOCX extraction failed: {e}")
+        logger.warning(f"[DOCX] XML fallback error: {e}")
         return ""
