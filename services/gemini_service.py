@@ -419,6 +419,115 @@ def _run_job_recommendations(
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. AI Cover Letter Generator
+# ─────────────────────────────────────────────────────────────────────────────
+_COVER_LETTER_PROMPT = """
+You are an expert career coach and professional writer who has helped thousands of candidates land jobs at top Indian and global companies.
+
+Generate a compelling, personalised professional cover letter based on the resume and job description below.
+
+Candidate details:
+- Name: {candidate_name}
+- Target Company: {company_name}
+- Target Role: {job_title}
+
+Resume text:
+\"\"\"
+{resume_text}
+\"\"\"
+
+Job Description:
+\"\"\"
+{job_description}
+\"\"\"
+
+Tone preference: {tone}
+
+Instructions:
+1. Write a 3-4 paragraph cover letter (300-400 words)
+2. Opening paragraph: Hook with genuine enthusiasm for this specific role/company + your strongest relevant achievement
+3. Middle paragraphs (1-2): Match 3-4 specific skills/experiences from the resume to explicit requirements in the JD. Use numbers/metrics where resume provides them.
+4. Closing paragraph: Clear call to action, express eagerness for interview
+5. Tailor language to match the JD's tone and keywords — use the same terminology the JD uses
+6. Do NOT use clichés like "I am writing to apply", "I believe I am a perfect fit", "Please find attached"
+7. Sound human and confident, not robotic or over-formal
+8. If company name is "Unknown Company", write a generic but highly professional letter
+
+Return ONLY a valid JSON object — no markdown, no prose outside the JSON:
+{{
+  "cover_letter": "the full cover letter text with proper paragraph breaks using \\n\\n",
+  "subject_line": "suggested email subject line for this application",
+  "key_matches": ["3-5 specific skills/experiences from resume that match this JD"],
+  "tone_used": "{tone}",
+  "word_count": <integer>,
+  "tips": ["2-3 personalisation tips to make this letter even stronger before sending"]
+}}
+""".strip()
+
+
+def _run_cover_letter(
+    resume_text: str,
+    job_description: str,
+    candidate_name: str,
+    company_name: str,
+    job_title: str,
+    tone: str,
+) -> dict:
+    prompt = _COVER_LETTER_PROMPT.format(
+        resume_text=resume_text[:6000],
+        job_description=job_description[:3000],
+        candidate_name=candidate_name or "the candidate",
+        company_name=company_name or "Unknown Company",
+        job_title=job_title or "the role",
+        tone=tone,
+    )
+    try:
+        raw_text = _call_with_fallback(prompt)
+        raw = _extract_json(raw_text)
+        result = json.loads(raw)
+        result.setdefault("cover_letter", "")
+        result.setdefault("subject_line", f"Application for {job_title} — {candidate_name}")
+        result.setdefault("key_matches", [])
+        result.setdefault("tone_used", tone)
+        result.setdefault("word_count", len(result.get("cover_letter", "").split()))
+        result.setdefault("tips", [])
+        logger.info(f"[Gemini] Cover letter generated — {result.get('word_count')} words")
+        return result
+    except json.JSONDecodeError as e:
+        logger.warning(f"[Gemini] Cover letter JSON parse error: {e}")
+        return {"error": "Could not parse Gemini response. Try again.", "cover_letter": ""}
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.warning(f"[Gemini] Cover letter error: {e}")
+        return {"error": str(e), "cover_letter": ""}
+
+
+async def generate_cover_letter(
+    resume_text: str,
+    job_description: str,
+    candidate_name: str = "",
+    company_name: str = "",
+    job_title: str = "",
+    tone: str = "Professional",
+) -> dict:
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor, _run_cover_letter,
+                resume_text, job_description,
+                candidate_name, company_name, job_title, tone,
+            ),
+            timeout=60,
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("[Gemini] Cover letter generation timed out")
+        return {"error": "Generation timed out. Please try again.", "cover_letter": ""}
+
+
 async def get_resume_job_recommendations(
     skills: list[str],
     roles: list[str],

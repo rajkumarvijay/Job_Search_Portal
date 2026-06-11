@@ -12,6 +12,7 @@ from services.gemini_service import (
     search_jobs_ai,
     analyze_resume,
     get_resume_job_recommendations,
+    generate_cover_letter,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,49 @@ async def analyse_resume_full(
     except Exception as e:
         logger.error(f"Full resume analysis error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Resume analysis failed: {e}")
+
+
+# ── Cover Letter Generator ─────────────────────────────────────────────────────
+@router.post("/cover-letter")
+async def ai_cover_letter(
+    job_description:  str        = Form(...),
+    candidate_name:   str        = Form(default=""),
+    company_name:     str        = Form(default=""),
+    job_title:        str        = Form(default=""),
+    tone:             str        = Form(default="Professional"),
+    file:             UploadFile = File(default=None),
+    resume_text:      str        = Form(default=""),
+):
+    """
+    Generate a tailored cover letter from resume + job description.
+    Accepts either a resume file upload OR pasted resume_text.
+    """
+    if not job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description is required")
+
+    extracted = ""
+    if file and file.filename:
+        extracted = await _read_resume(file)
+    elif resume_text.strip():
+        extracted = resume_text.strip()
+    else:
+        raise HTTPException(status_code=400, detail="Provide a resume file or paste your resume text")
+
+    try:
+        result = await generate_cover_letter(
+            resume_text=extracted,
+            job_description=job_description,
+            candidate_name=candidate_name,
+            company_name=company_name,
+            job_title=job_title,
+            tone=tone,
+        )
+        return result
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"Cover letter error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Cover letter generation failed: {e}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
