@@ -240,3 +240,35 @@ async def seed_embeddings(db: AsyncSession = Depends(get_db)):
         "total_embedded": total_embedded,
         "queries_run": len(SEED_QUERIES),
     }
+
+
+@router.get("/test-embedding")
+async def test_embedding():
+    """Debug endpoint — tests a single embedding call and returns result or full error."""
+    import httpx, os
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        return {"status": "error", "error": "GEMINI_API_KEY not set"}
+
+    results = {}
+    for model in ["text-embedding-004", "embedding-001"]:
+        for version in ["v1", "v1beta"]:
+            key = f"{version}/{model}"
+            try:
+                url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:embedContent"
+                resp = httpx.post(
+                    url,
+                    params={"key": api_key},
+                    json={"model": f"models/{model}", "content": {"parts": [{"text": "software engineer"}]}},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    vals = resp.json()["embedding"]["values"]
+                    results[key] = {"status": "ok", "dims": len(vals)}
+                else:
+                    results[key] = {"status": "error", "code": resp.status_code, "body": resp.text[:200]}
+            except Exception as e:
+                results[key] = {"status": "exception", "error": str(e)[:200]}
+
+    working = [k for k, v in results.items() if v.get("status") == "ok"]
+    return {"working_models": working, "details": results}
