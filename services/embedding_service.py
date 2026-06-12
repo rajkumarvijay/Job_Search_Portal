@@ -42,23 +42,29 @@ def _get_api_key() -> str:
 # ── Core embedding call using the SDK (handles URL/auth correctly) ────────────
 
 _EMBED_MODELS = [
-    "models/text-embedding-004",   # 768 dims — preferred
-    "models/embedding-001",        # 768 dims — fallback
+    "text-embedding-004",   # v1 API — 768 dims
+    "embedding-001",        # v1 API — 768 dims fallback
 ]
 
 def _embed_sync(content: str) -> list[float]:
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-
+    import httpx
+    api_key = _get_api_key()
     last_err = None
+
     for model in _EMBED_MODELS:
         try:
-            result = genai.embed_content(
-                model=model,
-                content=content[:8000],
-                task_type="retrieval_document",
+            url = f"https://generativelanguage.googleapis.com/v1/models/{model}:embedContent"
+            resp = httpx.post(
+                url,
+                params={"key": api_key},
+                json={
+                    "model": f"models/{model}",
+                    "content": {"parts": [{"text": content[:8000]}]},
+                },
+                timeout=30,
             )
-            return result["embedding"]
+            resp.raise_for_status()
+            return resp.json()["embedding"]["values"]
         except Exception as e:
             logger.warning(f"[embedding] model {model} failed: {e}")
             last_err = e
