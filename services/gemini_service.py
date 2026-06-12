@@ -504,6 +504,132 @@ def _run_cover_letter(
         return {"error": str(e), "cover_letter": ""}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. AI Job Match Score
+# ─────────────────────────────────────────────────────────────────────────────
+_JOB_MATCH_PROMPT = """
+You are an expert technical recruiter and career coach with deep knowledge of the Indian and global job markets.
+
+Analyse how well the candidate's resume matches the given job description and return ONLY a valid JSON object — no markdown, no explanation.
+
+Resume:
+\"\"\"
+{resume_text}
+\"\"\"
+
+Job Description:
+\"\"\"
+{job_description}
+\"\"\"
+
+Return EXACTLY this JSON structure (all fields required):
+{{
+  "match_score": <integer 0-100>,
+  "match_grade": "Excellent" | "Strong" | "Good" | "Fair" | "Weak",
+  "match_summary": "3-4 sentence honest assessment: why this score, what the candidate's strongest alignment is, and the biggest gap",
+
+  "matched_skills": [
+    {{
+      "skill": "skill name",
+      "found_in_resume": "exact quote or context from resume showing this skill",
+      "jd_requirement": "what the JD says about this skill",
+      "proficiency": "Expert" | "Proficient" | "Familiar"
+    }}
+  ],
+
+  "missing_skills": [
+    {{
+      "skill": "skill name",
+      "importance": "Must-have" | "Nice-to-have",
+      "jd_context": "why JD needs this skill",
+      "gap_size": "Large" | "Medium" | "Small"
+    }}
+  ],
+
+  "strengths": [
+    {{
+      "title": "strength title",
+      "detail": "specific evidence from resume that aligns strongly with the JD",
+      "impact": "High" | "Medium"
+    }}
+  ],
+
+  "learning_recommendations": [
+    {{
+      "skill": "skill to learn",
+      "reason": "why this will close the gap for this specific role",
+      "resource": "specific course, certification, or platform (e.g. Coursera, AWS cert, Udemy)",
+      "timeframe": "e.g. 2-4 weeks",
+      "priority": "High" | "Medium" | "Low"
+    }}
+  ],
+
+  "experience_match": {{
+    "required_years": <number or null>,
+    "candidate_years": <number or null>,
+    "verdict": "Over-qualified" | "Matches" | "Slightly below" | "Under-qualified"
+  }},
+
+  "role_fit_tags": ["3-5 short tags like 'Strong Backend', 'Needs Cloud Exp', 'Good Culture Fit'"],
+
+  "quick_actions": ["top 3 things candidate can do RIGHT NOW to improve their match for this role"]
+}}
+
+Scoring guide:
+- 85-100 (Excellent): Near-perfect skill match, right experience level, strong keywords
+- 70-84  (Strong):    Most required skills present, minor gaps
+- 55-69  (Good):      Core skills match but several gaps, or experience mismatch
+- 35-54  (Fair):      Partial match, significant skill gaps
+- 0-34   (Weak):      Fundamental mismatch in skills or experience level
+
+Be precise, reference actual content from the resume, and be specific about what's missing vs what's present.
+""".strip()
+
+
+def _run_job_match(resume_text: str, job_description: str) -> dict:
+    prompt = _JOB_MATCH_PROMPT.format(
+        resume_text=resume_text[:7000],
+        job_description=job_description[:3000],
+    )
+    try:
+        raw_text = _call_with_fallback(prompt)
+        raw = _extract_json(raw_text)
+        result = json.loads(raw)
+        result.setdefault("match_score", 0)
+        result.setdefault("match_grade", "Fair")
+        result.setdefault("match_summary", "")
+        result.setdefault("matched_skills", [])
+        result.setdefault("missing_skills", [])
+        result.setdefault("strengths", [])
+        result.setdefault("learning_recommendations", [])
+        result.setdefault("experience_match", {})
+        result.setdefault("role_fit_tags", [])
+        result.setdefault("quick_actions", [])
+        logger.info(f"[Gemini] Job match score: {result.get('match_score')}")
+        return result
+    except json.JSONDecodeError as e:
+        logger.warning(f"[Gemini] Job match JSON parse error: {e}")
+        return {"error": "Could not parse Gemini response. Try again.", "match_score": 0}
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.warning(f"[Gemini] Job match error: {e}")
+        return {"error": str(e), "match_score": 0}
+
+
+async def match_resume_to_job(resume_text: str, job_description: str) -> dict:
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(_executor, _run_job_match, resume_text, job_description),
+            timeout=60,
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("[Gemini] Job match timed out")
+        return {"error": "Analysis timed out. Please try again.", "match_score": 0}
+
+
 async def generate_cover_letter(
     resume_text: str,
     job_description: str,

@@ -13,6 +13,7 @@ from services.gemini_service import (
     analyze_resume,
     get_resume_job_recommendations,
     generate_cover_letter,
+    match_resume_to_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,41 @@ async def analyse_resume_full(
     except Exception as e:
         logger.error(f"Full resume analysis error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Resume analysis failed: {e}")
+
+
+# ── Job Match Score ────────────────────────────────────────────────────────────
+@router.post("/job-match")
+async def ai_job_match(
+    job_description: str        = Form(...),
+    file:            UploadFile = File(default=None),
+    resume_text:     str        = Form(default=""),
+):
+    """
+    Score how well a resume matches a job description.
+    Returns match score, matched skills, missing skills, strengths, learning recommendations.
+    """
+    if not job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description is required")
+
+    extracted = ""
+    if file and file.filename:
+        extracted = await _read_resume(file)
+    elif resume_text.strip():
+        extracted = resume_text.strip()
+    else:
+        raise HTTPException(status_code=400, detail="Provide a resume file or paste your resume text")
+
+    try:
+        result = await match_resume_to_job(
+            resume_text=extracted,
+            job_description=job_description,
+        )
+        return result
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"Job match error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Job match analysis failed: {e}")
 
 
 # ── Cover Letter Generator ─────────────────────────────────────────────────────
