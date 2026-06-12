@@ -131,7 +131,7 @@ async def semantic_search(
             job_url, platform, date_posted, is_remote,
             ROUND((1 - (embedding <=> :vec))::numeric, 3) AS similarity
         FROM job_embeddings
-        WHERE 1 - (embedding <=> :vec) > 0.4
+        WHERE 1 - (embedding <=> :vec) > 0.2
         ORDER BY embedding <=> :vec
         LIMIT :lim
     """)

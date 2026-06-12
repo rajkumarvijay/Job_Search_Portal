@@ -208,7 +208,8 @@ async def fetch_jobs(
     logger.info(f"Results per portal: {per_portal} | Total: {len(all_jobs)}")
 
     # Fire-and-forget embedding — doesn't block search response
-    asyncio.create_task(_embed_all(all_jobs))
+    # Use ensure_future so it works in all FastAPI lifecycle contexts
+    asyncio.ensure_future(_embed_all(all_jobs))
 
     return all_jobs
 

@@ -205,3 +205,38 @@ async def similar_jobs(
     """Return jobs semantically similar to a given job — powers 'Similar Jobs' cards."""
     results = await get_similar_jobs(job_id, db, limit=limit)
     return {"job_id": job_id, "similar": results, "total": len(results)}
+
+
+@router.post("/seed-embeddings")
+async def seed_embeddings(db: AsyncSession = Depends(get_db)):
+    """
+    Scrape 10 common Indian job queries and embed all results.
+    Call this once after first deploy to populate the vector index.
+    Returns count of jobs embedded.
+    """
+    from services.embedding_service import store_job_embedding
+    from services.job_fetcher import fetch_jobs as _fetch
+
+    SEED_QUERIES = [
+        "software engineer", "data analyst", "product manager",
+        "frontend developer", "backend developer", "full stack developer",
+        "python developer", "react developer", "devops engineer",
+        "data scientist",
+    ]
+
+    total_embedded = 0
+    for query in SEED_QUERIES:
+        try:
+            jobs = await _fetch(query, "India", None, 5)
+            for job in jobs:
+                ok = await store_job_embedding(job.model_dump())
+                if ok:
+                    total_embedded += 1
+        except Exception as e:
+            logger.warning(f"[seed] Failed for '{query}': {e}")
+
+    return {
+        "message": f"Seeded {total_embedded} job embeddings",
+        "total_embedded": total_embedded,
+        "queries_run": len(SEED_QUERIES),
+    }
