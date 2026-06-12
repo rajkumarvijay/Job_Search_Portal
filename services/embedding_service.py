@@ -39,28 +39,31 @@ def _get_api_key() -> str:
     return key
 
 
-# ── Core embedding call via REST (works with all google-generativeai versions) ─
+# ── Core embedding call using the SDK (handles URL/auth correctly) ────────────
+
+_EMBED_MODELS = [
+    "models/text-embedding-004",   # 768 dims — preferred
+    "models/embedding-001",        # 768 dims — fallback
+]
 
 def _embed_sync(content: str) -> list[float]:
-    import urllib.request, json as _json
-    api_key = _get_api_key()
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"text-embedding-004:embedContent?key={api_key}"
-    )
-    body = _json.dumps({
-        "model": "models/text-embedding-004",
-        "content": {"parts": [{"text": content[:8000]}]},
-        "taskType": "RETRIEVAL_DOCUMENT",
-    }).encode()
-    req = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = _json.loads(resp.read())
-    return data["embedding"]["values"]
+    import google.generativeai as genai
+    genai.configure(api_key=_get_api_key())
+
+    last_err = None
+    for model in _EMBED_MODELS:
+        try:
+            result = genai.embed_content(
+                model=model,
+                content=content[:8000],
+                task_type="retrieval_document",
+            )
+            return result["embedding"]
+        except Exception as e:
+            logger.warning(f"[embedding] model {model} failed: {e}")
+            last_err = e
+
+    raise RuntimeError(f"All embedding models failed. Last error: {last_err}")
 
 
 async def _embed(text_content: str) -> list[float]:
