@@ -42,34 +42,43 @@ def _get_api_key() -> str:
 # ── Core embedding call using the SDK (handles URL/auth correctly) ────────────
 
 _EMBED_MODELS = [
-    "text-embedding-004",   # v1 API — 768 dims
-    "embedding-001",        # v1 API — 768 dims fallback
+    "text-embedding-004",
+    "gemini-embedding-exp-03-07",
+    "embedding-001",
 ]
+_VERSIONS = ["v1", "v1beta"]
 
 def _embed_sync(content: str) -> list[float]:
     import httpx
     api_key = _get_api_key()
     last_err = None
 
-    for model in _EMBED_MODELS:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1/models/{model}:embedContent"
-            resp = httpx.post(
-                url,
-                params={"key": api_key},
-                json={
-                    "model": f"models/{model}",
-                    "content": {"parts": [{"text": content[:8000]}]},
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json()["embedding"]["values"]
-        except Exception as e:
-            logger.warning(f"[embedding] model {model} failed: {e}")
-            last_err = e
+    for version in _VERSIONS:
+        for model in _EMBED_MODELS:
+            for auth_style in ["header", "param"]:
+                try:
+                    url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:embedContent"
+                    kwargs: dict = {
+                        "json": {
+                            "model": f"models/{model}",
+                            "content": {"parts": [{"text": content[:8000]}]},
+                        },
+                        "timeout": 20,
+                    }
+                    if auth_style == "header":
+                        kwargs["headers"] = {"x-goog-api-key": api_key}
+                    else:
+                        kwargs["params"] = {"key": api_key}
 
-    raise RuntimeError(f"All embedding models failed. Last error: {last_err}")
+                    resp = httpx.post(url, **kwargs)
+                    if resp.status_code == 200:
+                        logger.info(f"[embedding] Working combo: {version}/{model} auth={auth_style}")
+                        return resp.json()["embedding"]["values"]
+                    last_err = f"{resp.status_code} {resp.text[:100]}"
+                except Exception as e:
+                    last_err = str(e)[:100]
+
+    raise RuntimeError(f"All embedding combos failed. Last: {last_err}")
 
 
 async def _embed(text_content: str) -> list[float]:
