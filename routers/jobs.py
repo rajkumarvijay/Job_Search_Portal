@@ -8,6 +8,7 @@ from db.models import PostedJob
 from services.job_fetcher import fetch_jobs, ALL_PLATFORMS
 from services.gemini_service import search_jobs_ai
 from services.cache_service import get_from_memory, set_in_memory, make_search_key
+from services.embedding_service import semantic_search, get_similar_jobs
 from schemas.job import JobResult, SearchResponse
 import asyncio
 
@@ -153,3 +154,54 @@ async def search_jobs(
         platforms_searched=platform_list + (["ai"] if isinstance(gemini_results, list) and gemini_results else []),
         cached=False,
     )
+
+
+# ── Semantic Search ───────────────────────────────────────────────────────────
+
+@router.get("/semantic-search")
+async def semantic_search_jobs(
+    q:        str = Query(..., min_length=2, description="Natural-language query"),
+    location: str = Query("India"),
+    limit:    int = Query(20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Meaning-based job search using pgvector cosine similarity.
+    Works with vague queries like "remote python work" or "finance role in south india".
+    """
+    results = await semantic_search(q, db, limit=limit, location=location)
+
+    jobs = [
+        JobResult(
+            job_id      = r["job_id"],
+            title       = r["title"],
+            company     = r["company"],
+            location    = r.get("location") or "",
+            description = r.get("description"),
+            job_url     = r.get("job_url"),
+            platform    = r.get("platform") or "semantic",
+            date_posted = r.get("date_posted"),
+            is_remote   = r.get("is_remote", False),
+            salary_currency = "INR",
+        )
+        for r in results
+    ]
+
+    return {
+        "query":    q,
+        "location": location,
+        "total":    len(jobs),
+        "jobs":     jobs,
+        "mode":     "semantic",
+    }
+
+
+@router.get("/similar/{job_id}")
+async def similar_jobs(
+    job_id: str,
+    limit:  int = Query(5, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return jobs semantically similar to a given job — powers 'Similar Jobs' cards."""
+    results = await get_similar_jobs(job_id, db, limit=limit)
+    return {"job_id": job_id, "similar": results, "total": len(results)}

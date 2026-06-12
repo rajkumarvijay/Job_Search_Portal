@@ -5,6 +5,9 @@ from . import models  # noqa: F401 — ensures models are registered
 
 async def init_db():
     async with engine.begin() as conn:
+        # Enable pgvector extension (no-op if already installed)
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
         # Create all tables that don't exist yet
         await conn.run_sync(Base.metadata.create_all)
 

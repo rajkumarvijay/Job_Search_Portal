@@ -9,6 +9,7 @@ from schemas.job import JobResult
 from services.naukri_custom import fetch_naukri
 from services.glassdoor_custom import fetch_glassdoor
 from services.fallback_fetcher import fetch_remotive, fetch_arbeitnow
+from services.embedding_service import store_job_embedding
 
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=8)
@@ -206,4 +207,20 @@ async def fetch_jobs(
         per_portal[job.platform] = per_portal.get(job.platform, 0) + 1
     logger.info(f"Results per portal: {per_portal} | Total: {len(all_jobs)}")
 
+    # Fire-and-forget embedding — doesn't block search response
+    asyncio.create_task(_embed_all(all_jobs))
+
     return all_jobs
+
+
+async def _embed_all(jobs: list[JobResult]) -> None:
+    """Embed all scraped jobs in the background — runs after search response is sent."""
+    ok = 0
+    for job in jobs:
+        try:
+            success = await store_job_embedding(job.model_dump())
+            if success:
+                ok += 1
+        except Exception:
+            pass
+    logger.info(f"[embedding] Embedded {ok}/{len(jobs)} jobs in background")

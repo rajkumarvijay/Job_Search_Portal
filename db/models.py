@@ -2,6 +2,7 @@ from datetime import datetime
 import uuid
 from sqlalchemy import Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 from .database import Base
 
 
@@ -159,6 +160,36 @@ class PostedJob(Base):
 
     is_active:  Mapped[bool]     = mapped_column(Boolean,  default=True)
     posted_at:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class JobEmbedding(Base):
+    """
+    Stores a pre-computed vector embedding for every scraped job.
+    Used for semantic (meaning-based) job search via pgvector cosine similarity.
+    768 dimensions = Google text-embedding-004 output size.
+    """
+    __tablename__ = "job_embeddings"
+    __table_args__ = (
+        Index(
+            "job_emb_hnsw_idx", "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": "16", "ef_construction": "64"},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id:          Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id:      Mapped[str]      = mapped_column(String(64), unique=True, index=True)
+    title:       Mapped[str]      = mapped_column(String(512), nullable=False)
+    company:     Mapped[str]      = mapped_column(String(256), nullable=False)
+    location:    Mapped[str]      = mapped_column(String(256), nullable=True)
+    description: Mapped[str]      = mapped_column(Text, nullable=True)
+    job_url:     Mapped[str]      = mapped_column(Text, nullable=True)
+    platform:    Mapped[str]      = mapped_column(String(64), nullable=True)
+    date_posted: Mapped[str]      = mapped_column(String(32), nullable=True)
+    is_remote:   Mapped[bool]     = mapped_column(Boolean, default=False)
+    embedding    = mapped_column(Vector(768), nullable=False)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class WebhookEvent(Base):
