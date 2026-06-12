@@ -26,35 +26,45 @@ EMBEDDING_DIM = 768   # Google text-embedding-004
 
 # ── Lazy genai initialisation (same pattern as gemini_service) ────────────────
 
-_genai = None
+_api_key: str = ""
 
-def _get_genai():
-    global _genai
-    if _genai is not None:
-        return _genai
-    import google.generativeai as genai
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
+def _get_api_key() -> str:
+    global _api_key
+    if _api_key:
+        return _api_key
+    key = os.getenv("GEMINI_API_KEY", "")
+    if not key:
         raise ValueError("GEMINI_API_KEY is not set")
-    genai.configure(api_key=api_key)
-    _genai = genai
-    return genai
+    _api_key = key
+    return key
 
 
-# ── Core embedding call (blocking — run in thread) ────────────────────────────
+# ── Core embedding call via REST (works with all google-generativeai versions) ─
 
 def _embed_sync(content: str) -> list[float]:
-    genai = _get_genai()
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=content[:8000],          # model max ~8k chars
-        task_type="retrieval_document",
+    import urllib.request, json as _json
+    api_key = _get_api_key()
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"text-embedding-004:embedContent?key={api_key}"
     )
-    return result["embedding"]
+    body = _json.dumps({
+        "model": "models/text-embedding-004",
+        "content": {"parts": [{"text": content[:8000]}]},
+        "taskType": "RETRIEVAL_DOCUMENT",
+    }).encode()
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = _json.loads(resp.read())
+    return data["embedding"]["values"]
 
 
 async def _embed(text_content: str) -> list[float]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _embed_sync, text_content)
 
 
@@ -84,7 +94,6 @@ async def store_job_embedding(job: dict) -> bool:
     try:
         vector = await _embed(_job_text(job))
         async with AsyncSessionLocal() as db:
-            # Delete existing row first (upsert via delete+insert)
             await db.execute(
                 delete(JobEmbedding).where(JobEmbedding.job_id == str(job_id))
             )
@@ -101,9 +110,10 @@ async def store_job_embedding(job: dict) -> bool:
                 embedding   = vector,
             ))
             await db.commit()
+        logger.info(f"[embedding] Stored embedding for job {job_id}")
         return True
     except Exception as e:
-        logger.warning(f"[embedding] Failed to embed job {job_id}: {e}")
+        logger.error(f"[embedding] Failed to embed job {job_id}: {e}", exc_info=True)
         return False
 
 
@@ -138,8 +148,9 @@ async def semantic_search(
 
     try:
         rows = (await db.execute(sql, {"vec": vec_str, "lim": limit})).fetchall()
+        logger.info(f"[embedding] semantic_search '{query[:40]}' → {len(rows)} rows")
     except Exception as e:
-        logger.error(f"[embedding] pgvector query failed: {e}")
+        logger.error(f"[embedding] pgvector query failed: {e}", exc_info=True)
         return []
 
     results = []
