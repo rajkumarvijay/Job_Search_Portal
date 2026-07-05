@@ -259,8 +259,8 @@ async def test_embedding():
     """Debug endpoint — tests the local sentence-transformers model."""
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         vector = model.encode("software engineer python django").tolist()
-        return {"status": "ok", "model": "all-mpnet-base-v2", "dims": len(vector), "sample": vector[:5]}
+        return {"status": "ok", "model": "all-MiniLM-L6-v2", "dims": len(vector), "sample": vector[:5]}
     except Exception as e:
         return {"status": "error", "error": str(e)[:300]}

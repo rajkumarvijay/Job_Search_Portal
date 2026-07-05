@@ -24,8 +24,8 @@ from db.models import JobEmbedding
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2)
 
-EMBEDDING_DIM = 768
-HF_MODEL      = "sentence-transformers/all-mpnet-base-v2"
+EMBEDDING_DIM = 384
+HF_MODEL      = "sentence-transformers/all-MiniLM-L6-v2"
 
 # ── Lazy model load (singleton) ───────────────────────────────────────────────
 

@@ -166,7 +166,7 @@ class JobEmbedding(Base):
     """
     Stores a pre-computed vector embedding for every scraped job.
     Used for semantic (meaning-based) job search via pgvector cosine similarity.
-    768 dimensions = Google text-embedding-004 output size.
+    384 dimensions = all-MiniLM-L6-v2 output size (~80MB RAM vs 420MB for mpnet).
     """
     __tablename__ = "job_embeddings"
     __table_args__ = (
@@ -188,7 +188,7 @@ class JobEmbedding(Base):
     platform:    Mapped[str]      = mapped_column(String(64), nullable=True)
     date_posted: Mapped[str]      = mapped_column(String(32), nullable=True)
     is_remote:   Mapped[bool]     = mapped_column(Boolean, default=False)
-    embedding    = mapped_column(Vector(768), nullable=False)
+    embedding    = mapped_column(Vector(384), nullable=False)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
