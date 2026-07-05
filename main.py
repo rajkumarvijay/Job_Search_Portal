@@ -1,9 +1,8 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from db.init_db import init_db
 from routers import jobs, trending, history, saved, ai, payments, post_jobs, auth
 from scheduler import start_scheduler, stop_scheduler
@@ -35,7 +34,7 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Set ALLOWED_ORIGINS in Railway backend Variables:
 #   ALLOWED_ORIGINS=https://yourapp.vercel.app,https://jobquest.in
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
@@ -76,17 +75,3 @@ async def root():
 async def health():
     return {"status": "ok", "service": "Job Search Portal API"}
 
-
-# ── OPTIONS preflight fallback ────────────────────────────────────────────────
-# Only matches paths that start with /api/ so the root GET / is not shadowed.
-@app.options("/api/{rest_of_path:path}")
-async def preflight_handler(request: Request, rest_of_path: str):
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Max-Age": "86400",
-        },
-    )
