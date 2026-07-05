@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from db.init_db import init_db
 from routers import jobs, trending, history, saved, ai, payments, post_jobs, auth
@@ -58,8 +58,14 @@ app.include_router(auth.router,       prefix="/api/v1")
 
 
 # ── Root & health endpoints ───────────────────────────────────────────────────
-# GET / — Railway load balancer and uptime monitors hit this.
-# Must return 200 or Railway marks the service as unhealthy.
+# HEAD / and HEAD /health — Render's load balancer sends HEAD requests.
+# Must return 200 or Render marks the service as unhealthy and restarts it.
+@app.head("/")
+@app.head("/health")
+async def head_probe():
+    return Response(status_code=200)
+
+
 @app.get("/")
 async def root():
     return {

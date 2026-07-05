@@ -36,7 +36,9 @@ def _get_model():
     if _model is None:
         from sentence_transformers import SentenceTransformer
         logger.info(f"[embedding] Loading model {HF_MODEL} ...")
-        _model = SentenceTransformer(HF_MODEL)
+        # cache_folder matches where the Dockerfile pre-downloaded the model,
+        # so it loads from disk instantly instead of re-downloading at runtime.
+        _model = SentenceTransformer(HF_MODEL, cache_folder="/root/.cache/torch/sentence_transformers")
         logger.info("[embedding] Model loaded.")
     return _model
 

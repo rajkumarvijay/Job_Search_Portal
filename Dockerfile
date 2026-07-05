@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the sentence-transformers model so it's baked into the image.
 # No network call needed at runtime — model loads instantly from local cache.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='/root/.cache/torch/sentence_transformers')"
 
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM python:3.12-slim AS runner
@@ -19,9 +19,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl && rm -rf /var/lib/apt/lists/*
 
-# Copy installed packages from deps stage
+# Copy installed packages and pre-downloaded model cache from deps stage
 COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
+COPY --from=deps /root/.cache/torch /root/.cache/torch
 
 # Copy application code
 COPY . .
