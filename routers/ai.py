@@ -31,7 +31,7 @@ async def ai_job_search(
 ):
     try:
         jobs = await search_jobs_ai(q, location, results_wanted)
-        return {"query": q, "location": location, "total": len(jobs), "source": "huggingface-ai", "jobs": jobs}
+        return {"query": q, "location": location, "total": len(jobs), "source": "groq-ai", "jobs": jobs}
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
