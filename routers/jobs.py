@@ -6,7 +6,6 @@ from sqlalchemy import select, or_
 from db.database import get_db
 from db.models import PostedJob
 from services.job_fetcher import fetch_jobs, ALL_PLATFORMS
-from services.hf_llm_service import search_jobs_ai
 from services.cache_service import get_from_memory, set_in_memory, make_search_key
 from services.embedding_service import semantic_search, get_similar_jobs
 from schemas.job import JobResult, SearchResponse
@@ -91,19 +90,13 @@ async def search_jobs(
             jobs=jobs, platforms_searched=platform_list, cached=True,
         )
 
-    # ── Run jobspy + Gemini AI search in parallel ─────────────────────────────
-    jobspy_task = fetch_jobs(q, location, platform_list, results_per_site)
-    gemini_task = search_jobs_ai(q, location, results_wanted=20)
-
-    jobspy_results, gemini_results = await asyncio.gather(
-        jobspy_task, gemini_task,
-        return_exceptions=True,
-    )
+    # ── Run jobspy only — Groq AI search removed to prevent 429 rate limits
+    # jobspy already returns 60 real jobs from 6 portals; Groq adds no value here.
+    jobspy_results = await fetch_jobs(q, location, platform_list, results_per_site)
 
     seen_ids: set[str] = set()
     all_jobs: list[JobResult] = []
 
-    # Add jobspy results first
     if isinstance(jobspy_results, list):
         for job in jobspy_results:
             if job.job_id not in seen_ids:
@@ -111,16 +104,6 @@ async def search_jobs(
                 all_jobs.append(job)
     else:
         logger.warning(f"jobspy failed: {jobspy_results}")
-
-    # Merge HF AI results (deduplicated)
-    if isinstance(gemini_results, list):
-        for j in gemini_results:
-            job = _gemini_to_job_result(j)
-            if job and job.job_id and job.job_id not in seen_ids:
-                seen_ids.add(job.job_id)
-                all_jobs.append(job)
-    else:
-        logger.warning(f"HF AI search failed: {gemini_results}")
 
     # ── Merge posted jobs from DB ─────────────────────────────────────────────
     try:
@@ -151,7 +134,7 @@ async def search_jobs(
         total=len(all_jobs), page=page,
         per_page=results_per_site * len(platform_list),
         jobs=all_jobs,
-        platforms_searched=platform_list + (["ai"] if isinstance(gemini_results, list) and gemini_results else []),
+        platforms_searched=platform_list,
         cached=False,
     )
 
