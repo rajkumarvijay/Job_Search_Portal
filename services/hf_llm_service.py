@@ -1,8 +1,12 @@
 """
-HuggingFace LLM service — replaces Gemini for all AI resume features.
+AI LLM service — replaces Gemini for all AI resume features.
 
-Model:  mistralai/Mistral-7B-Instruct-v0.3  (free on HF Inference API)
-Auth:   HUGGINGFACE_API_TOKEN env var
+Provider: Groq (free tier, no billing needed)
+Model:    llama-3.1-8b-instant  — fast, accurate, free on Groq
+Auth:     GROQ_API_KEY env var  (get free key at console.groq.com)
+
+HuggingFace's api-inference.huggingface.co is blocked on this network;
+Groq's api.groq.com resolves fine and is OpenAI-compatible.
 
 Implements the same public API as gemini_service so routers need no changes:
   analyze_resume(resume_text, target_role)
@@ -19,36 +23,38 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4)
 
-HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-# ── Client setup ─────────────────────────────────────────────────────────────
+# ── API call ──────────────────────────────────────────────────────────────────
 
-def _get_client():
-    from huggingface_hub import InferenceClient
-    token = os.getenv("HUGGINGFACE_API_TOKEN", "")
-    if not token:
+def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
+    """POST to Groq's OpenAI-compatible endpoint, return response text."""
+    import httpx
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if not api_key:
         raise ValueError(
-            "HUGGINGFACE_API_TOKEN is not set. "
-            "Add it in Railway → backend service → Variables."
+            "GROQ_API_KEY is not set. "
+            "Get a free key at https://console.groq.com → API Keys → Create key."
         )
-    return InferenceClient(model=HF_MODEL, token=token)
-
-
-def _call_hf(prompt: str, max_tokens: int = 4096) -> str:
-    """Call Mistral-7B via HF Inference API, return raw text."""
-    client = _get_client()
-    response = client.chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        temperature=0.1,
+    resp = httpx.post(
+        GROQ_API_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": GROQ_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0.1,
+        },
+        timeout=60,
     )
-    return response.choices[0].message.content
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 def _extract_json_str(text: str) -> str:
@@ -153,7 +159,7 @@ def _run_resume_analysis(resume_text: str, target_role: str) -> dict:
         target_role=target_role or "General",
     )
     try:
-        raw_text = _call_hf(prompt)
+        raw_text = _call_llm(prompt)
         result   = json.loads(_extract_json_str(raw_text))
         for k, v in _DEFAULTS.items():
             result.setdefault(k, v)
@@ -225,7 +231,7 @@ def _run_job_match(resume_text: str, job_description: str) -> dict:
         job_description=job_description[:2500],
     )
     try:
-        raw_text = _call_hf(prompt)
+        raw_text = _call_llm(prompt)
         result   = json.loads(_extract_json_str(raw_text))
         result.setdefault("match_score", 0)
         result.setdefault("match_grade", "Fair")
@@ -301,7 +307,7 @@ def _run_cover_letter(
         tone=tone,
     )
     try:
-        raw_text = _call_hf(prompt, max_tokens=2048)
+        raw_text = _call_llm(prompt, max_tokens=2048)
         result   = json.loads(_extract_json_str(raw_text))
         result.setdefault("cover_letter", "")
         result.setdefault("subject_line", f"Application for {job_title}")
@@ -386,7 +392,7 @@ def _run_job_recommendations(
         query_encoded=query_encoded,
     )
     try:
-        raw_text = _call_hf(prompt)
+        raw_text = _call_llm(prompt)
         jobs     = json.loads(_extract_json_str(raw_text))
         if not isinstance(jobs, list):
             return []
@@ -460,7 +466,7 @@ def _run_job_search(query: str, location: str, count: int) -> list:
         count=count,
     )
     try:
-        raw_text = _call_hf(prompt)
+        raw_text = _call_llm(prompt)
         jobs     = json.loads(_extract_json_str(raw_text))
         if not isinstance(jobs, list):
             return []
