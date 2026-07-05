@@ -1,14 +1,14 @@
 """
 AI-powered routes:
-  GET  /api/v1/ai/jobs/search        — world-wide job search via Gemini
-  POST /api/v1/ai/resume             — resume ATS analysis via Gemini
+  GET  /api/v1/ai/jobs/search        — world-wide job search via HuggingFace
+  POST /api/v1/ai/resume             — resume ATS analysis via HuggingFace
   POST /api/v1/ai/resume/full        — ATS analysis + AI job recommendations
 """
 
 import io
 import logging
 from fastapi import APIRouter, Query, UploadFile, File, Form, HTTPException
-from services.gemini_service import (
+from services.hf_llm_service import (
     search_jobs_ai,
     analyze_resume,
     get_resume_job_recommendations,
@@ -31,7 +31,7 @@ async def ai_job_search(
 ):
     try:
         jobs = await search_jobs_ai(q, location, results_wanted)
-        return {"query": q, "location": location, "total": len(jobs), "source": "gemini-ai", "jobs": jobs}
+        return {"query": q, "location": location, "total": len(jobs), "source": "huggingface-ai", "jobs": jobs}
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:

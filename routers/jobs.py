@@ -6,7 +6,7 @@ from sqlalchemy import select, or_
 from db.database import get_db
 from db.models import PostedJob
 from services.job_fetcher import fetch_jobs, ALL_PLATFORMS
-from services.gemini_service import search_jobs_ai
+from services.hf_llm_service import search_jobs_ai
 from services.cache_service import get_from_memory, set_in_memory, make_search_key
 from services.embedding_service import semantic_search, get_similar_jobs
 from schemas.job import JobResult, SearchResponse
@@ -112,7 +112,7 @@ async def search_jobs(
     else:
         logger.warning(f"jobspy failed: {jobspy_results}")
 
-    # Merge Gemini AI results (deduplicated)
+    # Merge HF AI results (deduplicated)
     if isinstance(gemini_results, list):
         for j in gemini_results:
             job = _gemini_to_job_result(j)
@@ -120,7 +120,7 @@ async def search_jobs(
                 seen_ids.add(job.job_id)
                 all_jobs.append(job)
     else:
-        logger.warning(f"Gemini search failed: {gemini_results}")
+        logger.warning(f"HF AI search failed: {gemini_results}")
 
     # ── Merge posted jobs from DB ─────────────────────────────────────────────
     try:
@@ -142,7 +142,7 @@ async def search_jobs(
     except Exception as e:
         logger.warning(f"Could not fetch posted jobs: {e}")
 
-    logger.info(f"Total combined jobs: {len(all_jobs)} (jobspy + Gemini AI + portal posts)")
+    logger.info(f"Total combined jobs: {len(all_jobs)} (jobspy + HF AI + portal posts)")
 
     set_in_memory(cache_key, {"jobs": all_jobs})
 
