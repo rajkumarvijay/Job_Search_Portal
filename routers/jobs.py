@@ -210,35 +210,47 @@ async def similar_jobs(
 @router.post("/seed-embeddings")
 async def seed_embeddings(db: AsyncSession = Depends(get_db)):
     """
-    Scrape 10 common Indian job queries and embed all results.
-    Call this once after first deploy to populate the vector index.
-    Returns count of jobs embedded.
+    Scrape jobs across all platforms and embed them.
+    Re-run this any time to refresh the vector index.
     """
     from services.embedding_service import store_job_embedding
-    from services.job_fetcher import fetch_jobs as _fetch
+    from services.job_fetcher import fetch_jobs as _fetch, ALL_PLATFORMS
 
+    # Broad queries covering common Indian job roles
     SEED_QUERIES = [
         "software engineer", "data analyst", "product manager",
         "frontend developer", "backend developer", "full stack developer",
         "python developer", "react developer", "devops engineer",
-        "data scientist",
+        "data scientist", "java developer", "mobile developer",
+        "ui ux designer", "business analyst", "cloud engineer",
+        "machine learning engineer", "nodejs developer", "angular developer",
+        "qa engineer", "technical lead",
     ]
 
+    # Multiple Indian cities + remote to get diverse results
+    LOCATIONS = ["India", "Bangalore", "Hyderabad", "Mumbai", "Remote"]
+
+    per_platform: dict[str, int] = {}
     total_embedded = 0
+
     for query in SEED_QUERIES:
-        try:
-            jobs = await _fetch(query, "India", None, 5)
-            for job in jobs:
-                ok = await store_job_embedding(job.model_dump())
-                if ok:
-                    total_embedded += 1
-        except Exception as e:
-            logger.warning(f"[seed] Failed for '{query}': {e}")
+        for location in LOCATIONS:
+            try:
+                jobs = await _fetch(query, location, ALL_PLATFORMS, 3)
+                for job in jobs:
+                    ok = await store_job_embedding(job.model_dump())
+                    if ok:
+                        total_embedded += 1
+                        platform = job.platform or "unknown"
+                        per_platform[platform] = per_platform.get(platform, 0) + 1
+            except Exception as e:
+                logger.warning(f"[seed] Failed for '{query}' / {location}: {e}")
 
     return {
         "message": f"Seeded {total_embedded} job embeddings",
         "total_embedded": total_embedded,
-        "queries_run": len(SEED_QUERIES),
+        "queries_run": len(SEED_QUERIES) * len(LOCATIONS),
+        "per_platform": per_platform,
     }
 
 
