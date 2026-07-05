@@ -19,22 +19,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     await init_db()
     start_scheduler()
-    # Warm up the embedding model in the background so the first smart search
-    # request doesn't pay the cold-start penalty (~10s model load from disk).
-    import asyncio as _asyncio
-    _asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
     logger.info("Job Search Portal API ready")
     yield
     stop_scheduler()
-
-
-def _warmup_embedding():
-    try:
-        from services.embedding_service import _get_model
-        _get_model()
-        logger.info("Embedding model warmed up")
-    except Exception as e:
-        logger.warning(f"Embedding warmup skipped: {e}")
 
 
 app = FastAPI(
