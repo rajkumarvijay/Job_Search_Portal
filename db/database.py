@@ -39,8 +39,8 @@ DATABASE_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
 # ── Detect connection type ───────────────────────────────────────────────────
 # Private Railway URL (railway.internal) — plain TCP, no SSL required
 # Public proxy URL (rlwy.net)            — SSL required at protocol level
-_is_private = "railway.internal" in DATABASE_URL
-_use_ssl = not _is_private  # only enable SSL for public proxy connections
+_is_private = "railway.internal" in DATABASE_URL or "localhost" in DATABASE_URL or "127.0.0.1" in DATABASE_URL
+_use_ssl = not _is_private  # SSL only for public proxy — not needed for local/private connections
 
 print(
     f"DB: {'private internal' if _is_private else 'public proxy'} "
