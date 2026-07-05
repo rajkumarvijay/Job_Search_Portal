@@ -1,17 +1,24 @@
 """
-Semantic job search via pgvector + Google text-embedding-004.
+Semantic job search via pgvector + HuggingFace Inference API.
+
+Model: sentence-transformers/all-mpnet-base-v2  (768 dims — matches schema)
+API:   https://api-inference.huggingface.co/models/<model>
+Auth:  Bearer token from env var HUGGINGFACE_API_TOKEN
 
 Flow:
   store_job_embedding(job)  — called after each job is scraped
-  semantic_search(query)    — called from the /jobs/semantic-search endpoint
+  semantic_search(query)    — called from /jobs/semantic-search endpoint
+  get_similar_jobs(job_id)  — called from /jobs/similar/{job_id} endpoint
 """
 
 import asyncio
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+import httpx
 from sqlalchemy import text, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,70 +28,72 @@ from db.models import JobEmbedding
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2)
 
-EMBEDDING_DIM = 768   # Google text-embedding-004
+EMBEDDING_DIM = 768
+HF_MODEL     = "sentence-transformers/all-mpnet-base-v2"
+HF_API_URL   = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+
+# HF cold-start: model may be loading on first request — retry up to 3×
+_MAX_RETRIES = 3
+_RETRY_DELAY = 20   # seconds to wait if HF returns 503 "model is loading"
 
 
-# ── Lazy genai initialisation (same pattern as gemini_service) ────────────────
-
-_api_key: str = ""
-
-def _get_api_key() -> str:
-    global _api_key
-    if _api_key:
-        return _api_key
-    key = os.getenv("GEMINI_API_KEY", "")
-    if not key:
-        raise ValueError("GEMINI_API_KEY is not set")
-    _api_key = key
-    return key
+def _get_hf_token() -> str:
+    token = os.getenv("HUGGINGFACE_API_TOKEN", "")
+    if not token:
+        raise ValueError("HUGGINGFACE_API_TOKEN is not set in environment variables")
+    return token
 
 
-# ── Core embedding call using the SDK (handles URL/auth correctly) ────────────
-
-_EMBED_MODELS = [
-    "text-embedding-004",
-    "gemini-embedding-exp-03-07",
-    "embedding-001",
-]
-_VERSIONS = ["v1", "v1beta"]
+# ── Core embedding call (sync, runs in thread pool) ───────────────────────────
 
 def _embed_sync(content: str) -> list[float]:
-    import httpx
-    api_key = _get_api_key()
-    last_err = None
+    """
+    Call the HF Inference API and return a 768-dim embedding vector.
+    Retries on 503 (model loading) with a delay.
+    """
+    token = _get_hf_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"inputs": content[:8000]}
 
-    for version in _VERSIONS:
-        for model in _EMBED_MODELS:
-            for auth_style in ["header", "param"]:
-                try:
-                    url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:embedContent"
-                    kwargs: dict = {
-                        "json": {
-                            "model": f"models/{model}",
-                            "content": {"parts": [{"text": content[:8000]}]},
-                        },
-                        "timeout": 20,
-                    }
-                    if auth_style == "header":
-                        kwargs["headers"] = {"x-goog-api-key": api_key}
-                    else:
-                        kwargs["params"] = {"key": api_key}
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            resp = httpx.post(HF_API_URL, json=payload, headers=headers, timeout=30)
 
-                    resp = httpx.post(url, **kwargs)
-                    if resp.status_code == 200:
-                        logger.info(f"[embedding] Working combo: {version}/{model} auth={auth_style}")
-                        return resp.json()["embedding"]["values"]
-                    last_err = f"{resp.status_code} {resp.text[:100]}"
-                except Exception as e:
-                    last_err = str(e)[:100]
+            if resp.status_code == 200:
+                data = resp.json()
+                # API returns list[list[float]] — one vector per input string
+                vector = data[0] if isinstance(data[0], list) else data
+                logger.info(f"[embedding] HF API ok — dims={len(vector)}")
+                return vector
 
-    raise RuntimeError(f"All embedding combos failed. Last: {last_err}")
+            if resp.status_code == 503:
+                # Model is cold-starting on HF infrastructure
+                logger.warning(
+                    f"[embedding] HF model loading (attempt {attempt}/{_MAX_RETRIES}), "
+                    f"waiting {_RETRY_DELAY}s..."
+                )
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_DELAY)
+                    continue
+
+            raise RuntimeError(
+                f"HF Inference API returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+        except httpx.TimeoutException:
+            logger.warning(f"[embedding] HF API timeout (attempt {attempt})")
+            if attempt == _MAX_RETRIES:
+                raise RuntimeError("HF Inference API timed out after all retries")
+
+    raise RuntimeError("HF Inference API failed after all retries")
 
 
 async def _embed(text_content: str) -> list[float]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _embed_sync, text_content)
 
+
+# ── Job text serialisation ────────────────────────────────────────────────────
 
 def _job_text(job: dict) -> str:
     """Build a rich text representation of a job for embedding."""
@@ -171,9 +180,8 @@ async def semantic_search(
         logger.error(f"[embedding] pgvector query failed: {e}", exc_info=True)
         return []
 
-    results = []
-    for r in rows:
-        results.append({
+    return [
+        {
             "job_id":      r.job_id,
             "title":       r.title,
             "company":     r.company,
@@ -184,8 +192,9 @@ async def semantic_search(
             "date_posted": r.date_posted,
             "is_remote":   r.is_remote,
             "similarity":  float(r.similarity),
-        })
-    return results
+        }
+        for r in rows
+    ]
 
 
 async def get_similar_jobs(job_id: str, db: AsyncSession, limit: int = 5) -> list[dict]:

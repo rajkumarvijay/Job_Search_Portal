@@ -244,38 +244,31 @@ async def seed_embeddings(db: AsyncSession = Depends(get_db)):
 
 @router.get("/test-embedding")
 async def test_embedding():
-    """Debug endpoint — tries every version/model/auth combo, returns what works."""
+    """Debug endpoint — tests the HuggingFace Inference API embedding call."""
     import httpx, os
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        return {"status": "error", "error": "GEMINI_API_KEY not set"}
+    token = os.getenv("HUGGINGFACE_API_TOKEN", "")
+    if not token:
+        return {"status": "error", "error": "HUGGINGFACE_API_TOKEN not set in Railway Variables"}
 
-    models   = ["text-embedding-004", "gemini-embedding-exp-03-07", "embedding-001"]
-    versions = ["v1", "v1beta"]
-    auths    = ["header", "param"]
-    results  = {}
+    model = "sentence-transformers/all-mpnet-base-v2"
+    url   = f"https://api-inference.huggingface.co/models/{model}"
 
-    for version in versions:
-        for model in models:
-            for auth in auths:
-                key = f"{version}/{model}/{auth}"
-                try:
-                    url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:embedContent"
-                    kwargs: dict = {
-                        "json": {"model": f"models/{model}", "content": {"parts": [{"text": "software engineer"}]}},
-                        "timeout": 10,
-                    }
-                    if auth == "header":
-                        kwargs["headers"] = {"x-goog-api-key": api_key}
-                    else:
-                        kwargs["params"] = {"key": api_key}
-                    resp = httpx.post(url, **kwargs)
-                    if resp.status_code == 200:
-                        results[key] = {"status": "ok", "dims": len(resp.json()["embedding"]["values"])}
-                    else:
-                        results[key] = {"status": resp.status_code, "body": resp.text[:120]}
-                except Exception as e:
-                    results[key] = {"status": "err", "error": str(e)[:120]}
-
-    working = [k for k, v in results.items() if v.get("status") == "ok"]
-    return {"working_combos": working, "key_prefix": api_key[:6], "details": results}
+    try:
+        resp = httpx.post(
+            url,
+            json={"inputs": "software engineer python django"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            vector = resp.json()[0]
+            return {"status": "ok", "model": model, "dims": len(vector), "sample": vector[:5]}
+        if resp.status_code == 503:
+            return {
+                "status": "loading",
+                "message": "Model is warming up on HF — wait 20s and retry",
+                "model": model,
+            }
+        return {"status": "error", "http_code": resp.status_code, "body": resp.text[:300]}
+    except Exception as e:
+        return {"status": "exception", "error": str(e)[:300]}
