@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: jobportal-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jobportal-db
+          property: connectionString
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"
+
+databases:
+  - name: jobportal-db
+    plan: free
+    databaseName: jobportal
+    user: jobportal
