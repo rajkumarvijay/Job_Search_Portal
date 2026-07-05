@@ -244,31 +244,11 @@ async def seed_embeddings(db: AsyncSession = Depends(get_db)):
 
 @router.get("/test-embedding")
 async def test_embedding():
-    """Debug endpoint — tests the HuggingFace Inference API embedding call."""
-    import httpx, os
-    token = os.getenv("HUGGINGFACE_API_TOKEN", "")
-    if not token:
-        return {"status": "error", "error": "HUGGINGFACE_API_TOKEN not set in Railway Variables"}
-
-    model = "sentence-transformers/all-mpnet-base-v2"
-    url   = f"https://api-inference.huggingface.co/models/{model}"
-
+    """Debug endpoint — tests the local sentence-transformers model."""
     try:
-        resp = httpx.post(
-            url,
-            json={"inputs": "software engineer python django"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            vector = resp.json()[0]
-            return {"status": "ok", "model": model, "dims": len(vector), "sample": vector[:5]}
-        if resp.status_code == 503:
-            return {
-                "status": "loading",
-                "message": "Model is warming up on HF — wait 20s and retry",
-                "model": model,
-            }
-        return {"status": "error", "http_code": resp.status_code, "body": resp.text[:300]}
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+        vector = model.encode("software engineer python django").tolist()
+        return {"status": "ok", "model": "all-mpnet-base-v2", "dims": len(vector), "sample": vector[:5]}
     except Exception as e:
-        return {"status": "exception", "error": str(e)[:300]}
+        return {"status": "error", "error": str(e)[:300]}

@@ -1,9 +1,8 @@
 """
-Semantic job search via pgvector + HuggingFace Inference API.
+Semantic job search via pgvector + sentence-transformers (local model).
 
 Model: sentence-transformers/all-mpnet-base-v2  (768 dims — matches schema)
-API:   https://api-inference.huggingface.co/models/<model>
-Auth:  Bearer token from env var HUGGINGFACE_API_TOKEN
+Runs entirely inside the container — no external API calls needed.
 
 Flow:
   store_job_embedding(job)  — called after each job is scraped
@@ -13,12 +12,9 @@ Flow:
 
 import asyncio
 import logging
-import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-import httpx
 from sqlalchemy import text, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,63 +25,26 @@ logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2)
 
 EMBEDDING_DIM = 768
-HF_MODEL     = "sentence-transformers/all-mpnet-base-v2"
-HF_API_URL   = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+HF_MODEL      = "sentence-transformers/all-mpnet-base-v2"
 
-# HF cold-start: model may be loading on first request — retry up to 3×
-_MAX_RETRIES = 3
-_RETRY_DELAY = 20   # seconds to wait if HF returns 503 "model is loading"
+# ── Lazy model load (singleton) ───────────────────────────────────────────────
 
+_model = None
 
-def _get_hf_token() -> str:
-    token = os.getenv("HUGGINGFACE_API_TOKEN", "")
-    if not token:
-        raise ValueError("HUGGINGFACE_API_TOKEN is not set in environment variables")
-    return token
+def _get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info(f"[embedding] Loading model {HF_MODEL} ...")
+        _model = SentenceTransformer(HF_MODEL)
+        logger.info("[embedding] Model loaded.")
+    return _model
 
 
 # ── Core embedding call (sync, runs in thread pool) ───────────────────────────
 
 def _embed_sync(content: str) -> list[float]:
-    """
-    Call the HF Inference API and return a 768-dim embedding vector.
-    Retries on 503 (model loading) with a delay.
-    """
-    token = _get_hf_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {"inputs": content[:8000]}
-
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            resp = httpx.post(HF_API_URL, json=payload, headers=headers, timeout=30)
-
-            if resp.status_code == 200:
-                data = resp.json()
-                # API returns list[list[float]] — one vector per input string
-                vector = data[0] if isinstance(data[0], list) else data
-                logger.info(f"[embedding] HF API ok — dims={len(vector)}")
-                return vector
-
-            if resp.status_code == 503:
-                # Model is cold-starting on HF infrastructure
-                logger.warning(
-                    f"[embedding] HF model loading (attempt {attempt}/{_MAX_RETRIES}), "
-                    f"waiting {_RETRY_DELAY}s..."
-                )
-                if attempt < _MAX_RETRIES:
-                    time.sleep(_RETRY_DELAY)
-                    continue
-
-            raise RuntimeError(
-                f"HF Inference API returned {resp.status_code}: {resp.text[:200]}"
-            )
-
-        except httpx.TimeoutException:
-            logger.warning(f"[embedding] HF API timeout (attempt {attempt})")
-            if attempt == _MAX_RETRIES:
-                raise RuntimeError("HF Inference API timed out after all retries")
-
-    raise RuntimeError("HF Inference API failed after all retries")
+    return _get_model().encode(content[:8000], convert_to_numpy=True).tolist()
 
 
 async def _embed(text_content: str) -> list[float]:
@@ -96,7 +55,6 @@ async def _embed(text_content: str) -> list[float]:
 # ── Job text serialisation ────────────────────────────────────────────────────
 
 def _job_text(job: dict) -> str:
-    """Build a rich text representation of a job for embedding."""
     parts = [
         f"Job Title: {job.get('title', '')}",
         f"Company: {job.get('company', '')}",
@@ -111,10 +69,6 @@ def _job_text(job: dict) -> str:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def store_job_embedding(job: dict) -> bool:
-    """
-    Embed a job dict and upsert into job_embeddings.
-    Returns True on success, False on failure (non-fatal).
-    """
     job_id = job.get("job_id") or job.get("id")
     if not job_id:
         return False
@@ -150,10 +104,6 @@ async def semantic_search(
     limit: int = 20,
     location: Optional[str] = None,
 ) -> list[dict]:
-    """
-    Find jobs whose embeddings are closest to the query embedding.
-    Returns a list of dicts with job fields + similarity score (0–1).
-    """
     try:
         query_vec = await _embed(query)
     except Exception as e:
@@ -198,7 +148,6 @@ async def semantic_search(
 
 
 async def get_similar_jobs(job_id: str, db: AsyncSession, limit: int = 5) -> list[dict]:
-    """Return jobs similar to a given job_id — used for 'Similar Jobs' on job cards."""
     sql = text("""
         SELECT
             e2.job_id, e2.title, e2.company, e2.location,
