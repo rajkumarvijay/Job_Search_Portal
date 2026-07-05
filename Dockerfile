@@ -1,5 +1,5 @@
 # ── Stage 1: dependency install ───────────────────────────────────────────────
-FROM python:3.13-slim AS deps
+FROM python:3.12-slim AS deps
 
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -9,14 +9,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
-FROM python:3.13-slim AS runner
+FROM python:3.12-slim AS runner
 
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from deps stage
-COPY --from=deps /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
 # Copy application code
