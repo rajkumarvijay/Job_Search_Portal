@@ -152,6 +152,17 @@ async def semantic_search_jobs(
     Meaning-based job search using pgvector cosine similarity.
     Works with vague queries like "remote python work" or "finance role in south india".
     """
+    from services.embedding_service import _model as _emb_model
+    if _emb_model is None:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "AI model is warming up. Retrying in 45 seconds.",
+                "warming_up": True,
+            },
+        )
+
     results = await semantic_search(q, db, limit=limit, location=location)
 
     jobs = [

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -19,9 +20,26 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     await init_db()
     start_scheduler()
+    # Fire-and-forget: load the embedding model in a thread so the first
+    # smart search request is instant instead of blocking for ~50s.
+    asyncio.create_task(_async_warmup())
     logger.info("Job Search Portal API ready")
     yield
     stop_scheduler()
+
+
+async def _async_warmup():
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _load_embedding_model)
+
+
+def _load_embedding_model():
+    try:
+        from services.embedding_service import _get_model
+        _get_model()
+        logger.info("Embedding model warm-up complete")
+    except Exception as e:
+        logger.warning(f"Embedding warm-up failed: {e}")
 
 
 app = FastAPI(
