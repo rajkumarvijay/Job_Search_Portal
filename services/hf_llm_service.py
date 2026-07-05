@@ -58,18 +58,43 @@ def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
 
 
 def _extract_json_str(text: str) -> str:
-    """Strip markdown fences, return raw JSON string."""
+    """Strip markdown fences and extract the first complete JSON object or array."""
     text = text.strip()
-    # Remove ```json ... ``` or ``` ... ```
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    # Find outermost { } or [ ]
-    for start_char, end_char in [('{', '}'), ('[', ']')]:
-        start = text.find(start_char)
-        end   = text.rfind(end_char)
-        if start != -1 and end != -1 and end > start:
-            return text[start:end + 1]
-    return text.strip()
+    # Strip markdown code fences
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
+    text = text.strip()
+
+    # Use bracket matching to find the first complete { } or [ ] block.
+    # This handles extra text after the JSON that would break json.loads.
+    for open_ch, close_ch in [('{', '}'), ('[', ']')]:
+        start = text.find(open_ch)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for i, ch in enumerate(text[start:], start):
+            if escape:
+                escape = False
+                continue
+            if ch == '\\' and in_string:
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        break  # found the open bracket but no matching close — fall through
+
+    return text
 
 
 # ── 1. Resume ATS Analysis ────────────────────────────────────────────────────
